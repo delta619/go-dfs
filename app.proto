@@ -1,0 +1,101 @@
+syntax = "proto3";
+option go_package = "./messages";
+
+
+message Action{
+    string action = 1;
+    string context = 2;
+}
+
+// Message used for storing a file chunk
+message Chunk {
+    string file_name = 1;
+    int32 chunk_number = 2;
+    bytes data = 3;
+}
+
+// Message used for retrieving a file chunk
+message ChunkRequest {
+    string file_name = 1;
+    int32 chunk_number = 2;
+}
+
+// Message used for providing a file chunk
+message ChunkResponse {
+    bytes data = 1;
+}
+  
+
+message Heartbeat{
+    string host = 1;
+    bool beat = 2;
+    string message = 3;
+}
+
+message Register{
+    string host = 1;
+    string port = 2;
+    string message = 3;
+}
+
+message Response{
+    bool isSuccess = 1;
+    string host = 2;
+    string message = 3;
+}
+
+message StoreRequest {
+    string file_name = 1;
+    int32 chunk_size = 2;
+  }
+  
+// Message used for confirming the storage of a new file
+message StoreResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Message used for retrieving an existing file
+message RetrieveRequest {
+    string file_name = 1;
+}
+
+// Message used for providing an existing file
+message RetrieveResponse {
+    bytes data = 1;
+}
+
+// Message used for deleting an existing file
+message DeleteRequest {
+string file_name = 1;
+}
+
+
+  // Message used for listing all files in the system
+message ListRequest {}
+
+// Message used for providing a list of all files in the system
+message ListResponse {
+    repeated string file_names = 1;
+}
+
+  
+  
+
+
+message Wrapper {
+    oneof msg {
+        Action act = 1;
+        Register reg = 2;
+        Heartbeat Heartbeat = 3;
+        Response res = 4;
+    }
+}
+
+
+
+/*
+Always use capitalised objects
+In case of _, omit it and use the capitalised subpart of the substrings
+getter can be accessed by travering through object trees and using a .Get`Value`() function
+*/
