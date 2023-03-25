@@ -1,0 +1,47 @@
+{
+    "chunks": [
+        {
+            "chunkname": "6cd18fb013ec016b4b53ed834c666f4d",
+            "primaryNode": "8",
+            "secondaryNodes": [
+                "7",
+                "9"
+            ]
+        },
+        {
+            "chunkname": "b095b95f405f265b37dc253c0e538d99",
+            "primaryNode": "0",
+            "secondaryNodes": [
+                "2",
+                "7"
+            ]
+        },
+        {
+            "chunkname": "fe9e0f47393420f94d6edaba0c27ede8",
+            "primaryNode": "3",
+            "secondaryNodes": [
+                "9",
+                "7"
+            ]
+        },
+        {
+            "chunkname": "bb0e4ee42416b1dd576e933130ac8f59",
+            "primaryNode": "0",
+            "secondaryNodes": [
+                "4",
+                "5"
+            ]
+        }
+    ],
+    "fileMeta": [
+        {
+            "chunks": [
+                "6cd18fb013ec016b4b53ed834c666f4d",
+                "b095b95f405f265b37dc253c0e538d99",
+                "fe9e0f47393420f94d6edaba0c27ede8",
+                "bb0e4ee42416b1dd576e933130ac8f59"
+            ],
+            "filename": "boom.mp4"
+        }
+    ]
+}

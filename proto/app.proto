@@ -39,7 +39,7 @@ message Register{
 }
 
 message Response{
-    bool isSuccess = 1;
+    bool Success = 1;
     string host = 2;
     string message = 3;
 }
@@ -80,15 +80,34 @@ message ListResponse {
 }
 
   
-  
+message FileTransfer {
+    string file_name = 2;
+    bytes file_data = 3;
+    int32 file_size = 4;
+    bytes checksum = 5;
+}
+
+message Request{
+    string file_name = 1;
+    int32 file_size = 2;
+    string action = 3;
+    bool acknowledged = 4;
+
+}
 
 
 message Wrapper {
     oneof msg {
         Action act = 1;
         Register reg = 2;
-        Heartbeat Heartbeat = 3;
+        Heartbeat heartbeat = 3;
         Response res = 4;
+
+        Request file_request = 5;
+        FileTransfer file_transfer = 6;
+        Response file_response = 7;
+
+
     }
 }
 
