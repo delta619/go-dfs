@@ -394,39 +394,6 @@ func ReadFileChunks(filePath string) (*FileChunks, error) {
 	return &fileChunks, nil
 }
 
-// UpdateFileChunks updates a FileChunks struct and writes it to a JSON file
-func UpdateFileChunks(filePath string, fileChunks *FileChunks) error {
-	jsonData, err := json.MarshalIndent(fileChunks, "", "    ")
-	if err != nil {
-		return err
-	}
-
-	err = ioutil.WriteFile(filePath, jsonData, 0644)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func modifyJSON() {
-	// Read the file chunks from the JSON file
-	fileChunks, err := ReadFileChunks("metadata.json")
-	if err != nil {
-		// Handle error
-	}
-
-	// Modify the file chunks as desired
-	fileChunks.Files["example1.txt"] = []string{"chunk1", "chunk2", "chunk3", "chunk4"}
-
-	// Save the updated file chunks to the JSON file
-	err = UpdateFileChunks("metadata.json", fileChunks)
-	if err != nil {
-		// Handle error
-	}
-
-}
-
 //////////////////////// UTILS /////////////////////////////////
 
 func validateHeartbeat(msgHandler *messages.MessageHandler, host string, beat bool) {
