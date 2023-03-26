@@ -12,9 +12,10 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 )
 
-var chunkSize = 1 * 1024 * 1024 // 20 MB
+var chunkSize = 20 * 1024 * 1024 // 20 MB
 
 func check(err error) {
 	if err != nil {
@@ -286,13 +287,14 @@ func getAction() {
 
 }
 
-func retreiveAllChunks(file_name string, chunkNames []string, chunkNodes []string) {
+func retreiveAllChunks(file_name string, chunkNames []string, chunkNodes []string) { //TODO: Optimise it further
 	// create a map to store the chunks
 	chunks := make(map[string][]byte)
 
 	// send a request for each chunk to the corresponding node
 	for i, chunkName := range chunkNames {
 		node := chunkNodes[i]
+		println("TEMP", node, chunkName)
 		chunk, err := sendChunkRequest(node, chunkName)
 		if err != nil {
 			// handle error
@@ -320,7 +322,9 @@ func retreiveAllChunks(file_name string, chunkNames []string, chunkNodes []strin
 
 // sends a request to a nodeHandler asking for a specific chunk
 func sendChunkRequest(node string, chunkName string) ([]byte, error) {
-
+	if node == "" {
+		fmt.Println("#", node, chunkName, "#")
+	}
 	host := strings.Split(node, ":")[0]
 	port := strings.Split(node, ":")[1] //TODO: known handling
 
@@ -419,7 +423,7 @@ func main() {
 	///////////////
 
 	putAction()
-	// time.Sleep(3 * time.Second)
+	time.Sleep(time.Second)
 	getAction()
 
 	//////////////
