@@ -35,6 +35,7 @@ var (
 	registrationMap = make(map[string]int)
 	timestampMap    = make(map[string]time.Time)
 	someMapMutex    = sync.RWMutex{}
+	mutex           = &sync.Mutex{}
 )
 
 var automatic_deregestration_time = 7
@@ -135,7 +136,10 @@ func handleUploadFileMetaRequest(msgHandler *messages.MessageHandler, msg *messa
 	file_name := msg.GetFileName()
 	chunkNames := msg.GetChunkNames()
 
-	err := addMetaFileToJSONFile("metadata.json", file_name, chunkNames)
+	err := fillEmptyKeys("metadata.json") // validate metadata.json file
+	check(err)
+
+	err = addMetaFileToJSONFileMutex("metadata.json", file_name, chunkNames)
 	check(err)
 }
 
@@ -154,11 +158,10 @@ func handleChunkSaved(msgHandler *messages.MessageHandler, msg *messages.ChunkSa
 	err := fillEmptyKeys(metadataPath) // validate metadata.json file
 	check(err)
 
-	err = addChunkToJSONFile(metadataPath, chunkName, chunk)
+	err = addChunkToJSONFileMutex(metadataPath, chunkName, chunk)
 	check(err)
 }
 func handle_CHUNK_ROUTE_requests(msgHandler *messages.MessageHandler, msg *messages.ChunkRouteRequest) {
-
 	// get active node
 	active_hosts := getActiveHosts()
 	// get port from active_host[0]
@@ -169,7 +172,7 @@ func handle_CHUNK_ROUTE_requests(msgHandler *messages.MessageHandler, msg *messa
 		Success:   true,
 		ChunkName: msg.GetChunkName(),
 		Host:      host,
-		Port:      "21001", // port of nodes set by us
+		Port:      "21001", // service port of nodes predefined
 	}
 	wrapper := &messages.Wrapper{
 		Msg: &messages.Wrapper_ChunkRouteResponse{ChunkRouteResponse: &route_response_payload},
@@ -180,10 +183,8 @@ func handle_CHUNK_ROUTE_requests(msgHandler *messages.MessageHandler, msg *messa
 
 func addMetaFileToJSONFile(jsonFilePath string, fileName string, chunkNames []string) error {
 	// Read existing JSON data from the file
-	someMapMutex.Lock()
 
 	jsonData, err := ioutil.ReadFile(jsonFilePath)
-	someMapMutex.Unlock()
 
 	if err != nil {
 		return err
@@ -206,7 +207,6 @@ func addMetaFileToJSONFile(jsonFilePath string, fileName string, chunkNames []st
 	}
 
 	// Write the updated JSON data to the file
-	someMapMutex.Lock()
 
 	err = ioutil.WriteFile(jsonFilePath, updatedJSON, 0644)
 
@@ -246,6 +246,21 @@ func addChunkToJSONFile(jsonFilePath string, chunkName string, chunk Chunk) erro
 	}
 
 	return nil
+}
+
+func addMetaFileToJSONFileMutex(jsonFilePath string, fileName string, chunkNames []string) error {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	// call the original function
+	return addMetaFileToJSONFile(jsonFilePath, fileName, chunkNames)
+}
+func addChunkToJSONFileMutex(jsonFilePath string, chunkName string, chunk Chunk) error {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	// call the original function
+	return addChunkToJSONFile(jsonFilePath, chunkName, chunk)
 }
 
 /////////////////////
@@ -364,6 +379,7 @@ func fillEmptyKeys(metadataPath string) error {
 
 // ReadFileChunks reads the contents of a JSON file and returns a FileChunks struct
 func ReadFileChunks(filePath string) (*FileChunks, error) {
+	fillEmptyKeys("./metadata.json")
 	jsonData, err := ioutil.ReadFile(filePath)
 	if err != nil {
 		return nil, err
@@ -421,7 +437,7 @@ func validateHeartbeat(msgHandler *messages.MessageHandler, host string, beat bo
 
 	if beat == false {
 		isSuccess = false
-		// for handling client side interrupt
+		// for handling node side interrupt
 		deregister(host)
 		fmt.Println("Remote host - " + host + " got terminated unexpectedly.")
 		return
@@ -458,6 +474,8 @@ func validateHeartbeat(msgHandler *messages.MessageHandler, host string, beat bo
 	msgHandler.Send(wrapper)
 }
 func getActiveHosts() []string {
+	someMapMutex.Lock()
+	defer someMapMutex.Unlock()
 	var activeHosts []string
 	for host, status := range registrationMap {
 		if status == 1 {
@@ -477,10 +495,10 @@ func updateTimeStamp(host string) {
 func register(hostname string) {
 	someMapMutex.Lock()
 
-	unique_client_node := hostname
-	registrationMap[unique_client_node] = 1
-	timestampMap[unique_client_node] = time.Now()
-	fmt.Println("Registered host - " + unique_client_node)
+	unique_node := hostname
+	registrationMap[unique_node] = 1
+	timestampMap[unique_node] = time.Now()
+	fmt.Println("Registered host - " + unique_node)
 
 	someMapMutex.Unlock()
 }
@@ -528,7 +546,7 @@ func main() {
 	go removeInactiveNodesAutomatically()
 
 	for {
-		fmt.Println("waiting for request on", port)
+		fmt.Println("waiting for request on orion02", port)
 		if conn, err := listener.Accept(); err == nil {
 			msgHandler := messages.NewMessageHandler(conn)
 			// only handles one client at a time:

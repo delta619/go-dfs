@@ -14,48 +14,52 @@ import (
 	"sync"
 )
 
-var chunkSize = 20 * 1024 * 1024 // 2 MB
+var chunkSize = 1 * 1024 * 1024 // 20 MB
 
 func check(err error) {
 	if err != nil {
 		fmt.Println("Error occurred:", err)
 		debug.PrintStack()
+
 		os.Exit(1)
+		return
 	}
 }
 
 var controllerHandler *messages.MessageHandler
 
-func initiateRouteRequests(file_name string) {
-	//1. chunks the file
-	//2. sends the chunks to the nodes
+var nodeConnections = make(map[string]net.Conn)
 
-	fmt.Printf("Chunking/Uploading %s to nodes\n", file_name)
+var controllerHandlerMutex sync.Mutex
+var nodeConnectionsMutex sync.Mutex
 
-	// wrapper, err := controllerHandler.Receive()
-	// check(err)
-	// do all the chunking of this file
-	//1.
-	create_chunk_routes_for_upload(file_name)
-
+func getNodeConnections() map[string]net.Conn {
+	nodeConnectionsMutex.Lock()
+	defer nodeConnectionsMutex.Unlock()
+	return nodeConnections
 }
 
-var nodeConnections = make(map[string]net.Conn)
+func setNodeConnection(addr string, conn net.Conn) {
+	nodeConnectionsMutex.Lock()
+	defer nodeConnectionsMutex.Unlock()
+	nodeConnections[addr] = conn
+}
 
 func createNodeConnection(host string, port string) (net.Conn, error) {
 	addr := fmt.Sprintf("%s:%s", host, port)
-	conn, ok := nodeConnections[addr]
+	conn, ok := getNodeConnections()[addr]
 	if ok {
 		// connection already exists, return it
 		return conn, nil
 	}
 
 	// connection doesn't exist, create a new one
+
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
-	nodeConnections[addr] = conn
+	setNodeConnection(addr, conn)
 
 	return conn, nil
 }
@@ -69,7 +73,9 @@ func sendToNode(chunk_name string, host string, port string) {
 
 	//2. read the chunk from local
 	chunk_data, err := ioutil.ReadFile("./storage/" + chunk_name)
-	check(err)
+	if err != nil {
+		fmt.Errorf("Chunk was not found in local")
+	}
 
 	//3. Send the chunk data as a request to store in the node
 	chunk_payload := messages.UploadChunkRequest{
@@ -85,7 +91,7 @@ func sendToNode(chunk_name string, host string, port string) {
 	// Done storing the chunk
 	fmt.Println("⬆: UPLOAD_CHUNK : ", host+port, chunk_name)
 }
-func create_chunk_routes_for_upload(file_name string) {
+func createRoutedChunksForUpload(file_name string) {
 
 	//1. create directory for the chunks
 	sandboxPath := "./storage/"
@@ -104,59 +110,81 @@ func create_chunk_routes_for_upload(file_name string) {
 	chunkNames := make([]string, numChunks)
 
 	//4. Loop to store each chunk in the local
+	var wg sync.WaitGroup
 	for i := 0; i < numChunks; i++ {
-		start := i * chunkSize
-		end := int(math.Min(float64(start+chunkSize), float64(len(file_data))))
-		chunkData := file_data[start:end]
-		chunkName := fmt.Sprintf("%x", md5.Sum(chunkData))
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			start := i * chunkSize
+			end := int(math.Min(float64(start+chunkSize), float64(len(file_data))))
+			chunkData := file_data[start:end]
+			chunkName := fmt.Sprintf("%x", md5.Sum(chunkData))
 
-		chunkNames[i] = chunkName
+			chunkNames[i] = chunkName
 
-		//5. writing every chunk file to local
-		err := ioutil.WriteFile(sandboxPath+chunkName, chunkData, 0644)
-		if err != nil {
-			log.Fatal(err)
-		}
+			//5. writing every chunk file to local
+			err := ioutil.WriteFile(sandboxPath+chunkName, chunkData, 0644)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+		}(i)
 	}
+	wg.Wait()
+	println("All chunks individually saved to local")
 
 	// 6 send the chunk details to controller and ask which Node to put it in.
+	// time.Sleep(1 * time.Second)
+
+	concurrency := make(chan struct{}, 1)
+
 	for i := 0; i < numChunks; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
 
-		chunk_payload := messages.ChunkRouteRequest{
-			ChunkName: chunkNames[i],
-		}
-		wrapper := messages.Wrapper{
-			Msg: &messages.Wrapper_ChunkRouteRequest{ChunkRouteRequest: &chunk_payload},
-		}
-		//7 Send the chunk details and asking which node to put it in.
-		controllerHandler.Send(&wrapper)
+			concurrency <- struct{}{}
 
-		//8 Wait for each request 's response
-		routeResponseReceived := false
-		for {
-			if routeResponseReceived {
-				routeResponseReceived = false
-				break
+			chunk_payload := messages.ChunkRouteRequest{
+				ChunkName: chunkNames[i],
 			}
-			//9 when we receive the response
-			wrapper, err := controllerHandler.Receive()
-			check(err)
+			wrapper := messages.Wrapper{
+				Msg: &messages.Wrapper_ChunkRouteRequest{ChunkRouteRequest: &chunk_payload},
+			}
+			//7 Send the chunk details and asking which node to put it in.
+			controllerHandler.Send(&wrapper)
 
-			switch msg := wrapper.Msg.(type) {
-			case *messages.Wrapper_ChunkRouteResponse:
-				routeResponseReceived = true
-				if msg.ChunkRouteResponse.GetSuccess() {
-					//10 we get the node's host and port and proceed to upload that chunk to the node.
-					sendToNode(msg.ChunkRouteResponse.GetChunkName(), strings.Split(msg.ChunkRouteResponse.GetHost(), ":")[0], msg.ChunkRouteResponse.GetPort())
-				} else {
-					fmt.Printf("Route get failed for chunk %s\n", msg.ChunkRouteResponse.GetChunkName())
+			// 8 Wait for each request's response
+			routeResponseReceived := false
+			for {
+				if routeResponseReceived {
+					routeResponseReceived = false
+					break
 				}
-			default:
-				fmt.Println("Unexpected message received")
-			}
-		}
-	}
+				//9 when we receive the response
+				wrapper, err := controllerHandler.Receive()
+				check(err)
 
+				switch msg := wrapper.Msg.(type) {
+				case *messages.Wrapper_ChunkRouteResponse:
+					routeResponseReceived = true
+					if msg.ChunkRouteResponse.GetSuccess() {
+						//10 we get the node's host and port and proceed to upload that chunk to the node.
+						sendToNode(msg.ChunkRouteResponse.GetChunkName(), strings.Split(msg.ChunkRouteResponse.GetHost(), ":")[0], msg.ChunkRouteResponse.GetPort())
+					} else {
+						fmt.Printf("Route get failed for chunk %s\n", msg.ChunkRouteResponse.GetChunkName())
+						routeResponseReceived = true
+					}
+				default:
+					fmt.Println("Unexpected message received FREFDCGR")
+					fmt.Println(msg)
+				}
+			}
+			<-concurrency
+		}(i)
+	}
+	wg.Wait()
+	fmt.Println("All chunks uploaded")
 	//11. after uploading all the chunks, we send the details of all the chunks of this file controller
 	payload := messages.UploadFileMetaRequest{
 		FileName:   file_name,
@@ -184,8 +212,12 @@ func putAction() {
 	//2. Store request sent to controller
 	controllerHandler.Send(&wrapper)
 
+	fileUploadingCompleted := false
 	//3. Listening for response
 	for {
+		if fileUploadingCompleted {
+			break
+		}
 		wrapper, err := controllerHandler.Receive()
 		check(err)
 
@@ -198,16 +230,23 @@ func putAction() {
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					initiateRouteRequests(file_name)
+					createRoutedChunksForUpload(file_name)
 				}()
 				wg.Wait()
+				fileUploadingCompleted = true
+				break
 			}
-			return
+
 		default:
-			fmt.Println("Unexpected message received")
+			fmt.Println("Unexpected message received HTYGR")
+
+			return
+			break
 		}
-		// this for loop should break after initiateRouteRequests is done
+		// this for loop should break after prepareUploading is done
 	}
+	fmt.Println("ENDOF PUTACTION", file_name)
+
 }
 
 func getAction() {
@@ -237,7 +276,11 @@ func getAction() {
 			retreiveAllChunks(file_name, msg.RetrieveResponse.GetChunkNames(), msg.RetrieveResponse.GetChunkNodes())
 			return
 		default:
-			fmt.Println("Unexpected message received")
+			fmt.Println("Unexpected message received ASDGGTR")
+
+			return
+			break
+
 		}
 	}
 
@@ -278,12 +321,8 @@ func retreiveAllChunks(file_name string, chunkNames []string, chunkNodes []strin
 // sends a request to a nodeHandler asking for a specific chunk
 func sendChunkRequest(node string, chunkName string) ([]byte, error) {
 
-	if len(strings.Split(node, ":")) < 2 {
-		fmt.Errorf("Some error: node - ", node)
-	}
-
 	host := strings.Split(node, ":")[0]
-	port := strings.Split(node, ":")[1]
+	port := strings.Split(node, ":")[1] //TODO: known handling
 
 	nodeConnection, err := createNodeConnection(host, port)
 	check(err)
@@ -313,7 +352,10 @@ func sendChunkRequest(node string, chunkName string) ([]byte, error) {
 			exit = 1
 			return msg.ChunkResponse.GetChunkData(), nil
 		default:
-			fmt.Println("Unexpected message received")
+			fmt.Println("Unexpected message received YSFYHREVCD")
+
+			return []byte{0}, err
+
 		}
 	}
 	return []byte{0}, nil
@@ -336,7 +378,7 @@ func storeFile(file_name string, fileBytes []byte) error {
 func main() {
 
 	// connect to a server on localhost 619
-	controllerConnection, err := net.Dial("tcp", "orion01:21619")
+	controllerConnection, err := net.Dial("tcp", "orion02:21619")
 	check(err)
 
 	controllerHandler = messages.NewMessageHandler(controllerConnection)

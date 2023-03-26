@@ -24,7 +24,6 @@ var CHUNK_SERVICE_PORT = "21001" // all chunk related services are available on 
 
 func handleRequests(msgHandler *messages.MessageHandler) {
 	for {
-		// fmt.Println("Waiting for message from Controller")
 		wrapper, err := msgHandler.Receive()
 		if err != nil {
 			// log the error and wait for a while before retrying
@@ -47,12 +46,13 @@ func handleRequests(msgHandler *messages.MessageHandler) {
 			// inform the controller that the chunk was saved
 
 			// fmt.Println("Chunk saved to disk")
-			// fmt.Println("Sending confirmation to Controller")
 			ChunkSavedPayload := messages.ChunkSaved{ChunkName: chunk_name, Node: os.Args[1] + ":" + CHUNK_SERVICE_PORT, Success: true}
 			wrapper := &messages.Wrapper{ // send the chunk saved message to the controller
 				Msg: &messages.Wrapper_ChunkSaved{ChunkSaved: &ChunkSavedPayload},
 			}
 			heartbeartController.Send(wrapper)
+			fmt.Println("⬇️", "SAVING : ", chunk_name)
+
 		case *messages.Wrapper_ChunkRequest: /*controller*/
 
 			// fmt.Println("ChunkRequest received for file", msg.ChunkRequest.GetChunkName())
@@ -64,7 +64,7 @@ func handleRequests(msgHandler *messages.MessageHandler) {
 			wrapper := &messages.Wrapper{
 				Msg: &messages.Wrapper_ChunkResponse{ChunkResponse: &response_chunk_payload},
 			}
-			// fmt.Printf("Sending chunk %s to controller\n", msg.ChunkRequest.GetChunkName())
+			fmt.Printf("⬆ chunk %s to Client\n", msg.ChunkRequest.GetChunkName())
 			msgHandler.Send(wrapper)
 
 		}
@@ -93,7 +93,7 @@ func worker(heartbeartController *messages.MessageHandler, host string) {
 				register(heartbeartController, host)
 				continue
 			}
-			fmt.Println(" Up ")
+			// fmt.Println(" Up ")
 
 		case *messages.Wrapper_Register:
 			// fmt.Println("Registration confirmation received from Controller")
@@ -177,7 +177,7 @@ func main() {
 	}
 	// fmt.Println("Local address is " + localAddr.String())
 
-	remoteAddr, err := net.ResolveTCPAddr("tcp", "orion01:21619")
+	remoteAddr, err := net.ResolveTCPAddr("tcp", "orion02:21619")
 	if err != nil {
 		fmt.Println("Error resolving remote address:", err.Error())
 		return
