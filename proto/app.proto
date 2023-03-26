@@ -8,23 +8,48 @@ message Action{
 }
 
 // Message used for storing a file chunk
-message Chunk {
+message UploadChunkRequest {
+    string chunk_name = 1;
+    string file_name = 2;
+    bytes chunk_data = 3;
+}
+message UploadFileMetaRequest {
     string file_name = 1;
-    int32 chunk_number = 2;
-    bytes data = 3;
+    // list of chunk names
+    repeated string chunk_names = 2;
+    
 }
 
 // Message used for retrieving a file chunk
 message ChunkRequest {
-    string file_name = 1;
-    int32 chunk_number = 2;
+    string chunkName = 1;
 }
 
-// Message used for providing a file chunk
 message ChunkResponse {
-    bytes data = 1;
+    bytes chunkData = 1;
+    string chunkName = 2;
 }
-  
+
+ 
+message ChunkRouteRequest {
+    string chunkName = 1;
+}
+message ChunkRouteResponse {
+    string chunkName = 1;
+    string host = 2;
+    string port = 3;
+    bool success = 4;
+}
+
+message ChunkSaved {
+    string chunkName = 1;
+    string node = 2;
+    bool success = 3;
+}
+
+
+
+
 
 message Heartbeat{
     string host = 1;
@@ -46,7 +71,7 @@ message Response{
 
 message StoreRequest {
     string file_name = 1;
-    int32 chunk_size = 2;
+    int64 file_size = 2;
   }
   
 // Message used for confirming the storage of a new file
@@ -62,7 +87,8 @@ message RetrieveRequest {
 
 // Message used for providing an existing file
 message RetrieveResponse {
-    bytes data = 1;
+    repeated string chunk_names = 1;
+    repeated string chunk_nodes = 2;
 }
 
 // Message used for deleting an existing file
@@ -71,7 +97,7 @@ string file_name = 1;
 }
 
 
-  // Message used for listing all files in the system
+// Message used for listing all files in the system
 message ListRequest {}
 
 // Message used for providing a list of all files in the system
@@ -80,7 +106,7 @@ message ListResponse {
 }
 
   
-message FileTransfer {
+message FilePush {
     string file_name = 2;
     bytes file_data = 3;
     int32 file_size = 4;
@@ -98,16 +124,32 @@ message Request{
 
 message Wrapper {
     oneof msg {
-        Action act = 1;
-        Register reg = 2;
+        Action action = 1;
+        Register register = 2;
         Heartbeat heartbeat = 3;
-        Response res = 4;
+        Response response = 4;
 
         Request file_request = 5;
-        FileTransfer file_transfer = 6;
+        FilePush file_push = 6;
         Response file_response = 7;
 
+        StoreRequest store_request = 8;
+        StoreResponse store_response = 9;
 
+        ChunkRouteRequest chunk_route_request = 10;
+        ChunkRouteResponse chunk_route_response = 11;
+
+        UploadChunkRequest upload_chunk_request = 12;
+
+        ChunkSaved chunk_saved = 13;
+
+        UploadFileMetaRequest upload_file_meta_request = 14;
+
+        RetrieveRequest retrieve_request = 15;
+        RetrieveResponse retrieve_response = 16;
+
+        ChunkRequest chunk_request = 17;
+        ChunkResponse chunk_response = 18;
     }
 }
 
