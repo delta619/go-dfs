@@ -7,26 +7,24 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"math/rand"
 	"net"
 	"os"
-	"strconv"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/prologic/bitcask"
 )
 
+var metadb, _ = bitcask.Open("./meta")
+var chunkDB, _ = bitcask.Open("./chunk")
+
 type Chunk struct {
-	PrimaryNode    string   `json:"primaryNode"`
-	SecondaryNodes []string `json:"secondaryNodes"`
-}
-
-type FileMeta map[string][]string
-
-type FileChunks struct {
-	Files  map[string][]string `json:"files"`
-	Chunks map[string]Chunk    `json:"chunks"`
+	ChunkName      string
+	PrimaryNode    string
+	SecondaryNodes string
 }
 
 var single_heartbeat_ping = 5
@@ -54,69 +52,40 @@ func removeInactiveNodesAutomatically() {
 	}
 }
 
-func handleRequests(msgHandler *messages.MessageHandler) {
-	defer msgHandler.Close()
-
-	for {
-		wrapper, err := msgHandler.Receive()
-		check(err)
-
-		switch msg := wrapper.Msg.(type) {
-		case *messages.Wrapper_RetrieveRequest: /*client*/
-			// fmt.Println("RetrieveRequest received from Client")
-			handleRetrieveRequest(msgHandler, msg.RetrieveRequest)
-		case *messages.Wrapper_UploadFileMetaRequest: /*client*/
-			// fmt.Println("UploadFileMetaRequest received from Client")
-			handleUploadFileMetaRequest(msgHandler, msg.UploadFileMetaRequest)
-		case *messages.Wrapper_ChunkSaved: /*node*/
-			handleChunkSaved(msgHandler, msg.ChunkSaved)
-		case *messages.Wrapper_ChunkRouteRequest: /*client*/
-			// fmt.Println("ChunkRouteRequest received from Client")
-			handle_CHUNK_ROUTE_requests(msgHandler, msg.ChunkRouteRequest)
-		case *messages.Wrapper_StoreRequest: /*client*/
-			// fmt.Println("Client wants to Store", msg.StoreRequest.GetFileName())
-			payload := messages.StoreResponse{Success: true, Message: "You you can store the file"}
-			wrapper := &messages.Wrapper{
-				Msg: &messages.Wrapper_StoreResponse{StoreResponse: &payload},
-			}
-			msgHandler.Send(wrapper)
-		case *messages.Wrapper_Heartbeat: /*node*/
-			// fmt.Println("Heartbeat received from Node")
-			// handleNodeRequests(wrapper)
-			validateHeartbeat(msgHandler, msg.Heartbeat.GetHost(), msg.Heartbeat.GetBeat())
-		case *messages.Wrapper_Register: /*node*/
-			fmt.Println("Register received from Node")
-
-			register(msg.Register.GetHost())
-
-		}
-
-	}
-}
-
 func handleRetrieveRequest(msgHandler *messages.MessageHandler, msg *messages.RetrieveRequest) {
+	fmt.Println("\n", "LOG:", "Retreival request.")
 	file_name := msg.GetFileName()
 
-	fileChunks, err := ReadFileChunks("metadata.json")
-	check(err)
-	chunk_names := fileChunks.Files[file_name]
-	node_names := make([]string, 0)
+	chunks_list_names, err := getArrayValue(metadb, file_name)
+	fmt.Println("size 1 - ", len(chunks_list_names))
 
-	for _, chunkName := range chunk_names {
+	chunk_nodes := make([]string, 0)
+	for _, chunk_name := range chunks_list_names {
+		fmt.Printf("chunk - %s\n", chunk_name)
+		chunkMeta, err := getJSONObject(chunkDB, chunk_name)
+		check(err)
 
-		// append chunk name
-		node_names = append(node_names, fileChunks.Chunks[chunkName].PrimaryNode)
+		primaryNode := chunkMeta["PrimaryNode"].(string)
+		chunk_nodes = append(chunk_nodes, primaryNode)
+	}
+	fmt.Println("size 2 - ", len(chunk_nodes))
+
+	if err != nil {
+		panic(err)
 	}
 
 	// Send the primary node for each chunk to the client
 	payload := messages.RetrieveResponse{
-		ChunkNames: chunk_names,
-		ChunkNodes: node_names,
+		ChunkNames: chunks_list_names,
+		ChunkNodes: chunk_nodes,
+		FileName:   file_name,
 	}
 	wrapper := &messages.Wrapper{
 		Msg: &messages.Wrapper_RetrieveResponse{RetrieveResponse: &payload},
 	}
 	msgHandler.Send(wrapper)
+	fmt.Println("\n", "LOG:", "Retreival response sent")
+	fmt.Println("\n", "LOG:", "Retreival response sent")
 }
 
 func handleChunkResponse(nodeMsgHandler *messages.MessageHandler, msg *messages.ChunkResponse) {
@@ -136,138 +105,65 @@ func handleUploadFileMetaRequest(msgHandler *messages.MessageHandler, msg *messa
 	file_name := msg.GetFileName()
 	chunkNames := msg.GetChunkNames()
 
-	err := fillEmptyKeys("metadata.json") // validate metadata.json file
-	check(err)
+	updateToMeta(file_name, chunkNames)
+}
 
-	err = addMetaFileToJSONFileMutex("metadata.json", file_name, chunkNames)
-	check(err)
+func updateToMeta(file_name string, newChunkNames []string) {
+	chunkNamesStr := strings.Join(newChunkNames, ",")
+	// fmt.Printf("-> %s\n", chunkNamesStr)
+
+	key := []byte(file_name)
+	value := []byte(chunkNamesStr)
+
+	metadb.Put(key, value)
 }
 
 func handleChunkSaved(msgHandler *messages.MessageHandler, msg *messages.ChunkSaved) {
-
-	metadataPath := "./metadata.json"
 
 	chunkName := msg.GetChunkName()
 	node := msg.GetNode()
 
 	chunk := Chunk{
+		ChunkName:      chunkName,
 		PrimaryNode:    node,
-		SecondaryNodes: []string{"temp1", "temp2"},
+		SecondaryNodes: "temp1,temp2",
 	}
-
-	err := fillEmptyKeys(metadataPath) // validate metadata.json file
-	check(err)
-
-	err = addChunkToJSONFileMutex(metadataPath, chunkName, chunk)
-	check(err)
+	ok := saveOrUpdateChunkTODB(chunkDB, chunk)
+	if !ok {
+		fmt.Println("Chunk update failed")
+	}
 }
 func handle_CHUNK_ROUTE_requests(msgHandler *messages.MessageHandler, msg *messages.ChunkRouteRequest) {
 	// get active node
-	active_hosts := getActiveHosts()
+	assigned_node, err := get_route_node_for_chunk()
 	// get port from active_host[0]
-	host := active_hosts[0]
-	port := strings.Split(host, ":")[1]
-	_ = port
+
+	success := true
+	if err != 0 {
+		success = false
+	}
+	// fmt.Println("\n", "LOG:", "ChunkRouteResponse res.", assigned_node, err, success)
+
 	route_response_payload := messages.ChunkRouteResponse{
-		Success:   true,
-		ChunkName: msg.GetChunkName(),
-		Host:      host,
-		Port:      "21001", // service port of nodes predefined
+		Success:     success,
+		ChunkName:   msg.GetChunkName(),
+		Node:        assigned_node,
+		CurrentPart: msg.GetCurrentPart(),
+		TotalParts:  msg.GetTotalParts(),
+		FileName:    msg.GetFileName(),
+		ChunkSize:   msg.GetChunkSize(),
 	}
 	wrapper := &messages.Wrapper{
 		Msg: &messages.Wrapper_ChunkRouteResponse{ChunkRouteResponse: &route_response_payload},
 	}
-
 	msgHandler.Send(wrapper)
-}
-
-func addMetaFileToJSONFile(jsonFilePath string, fileName string, chunkNames []string) error {
-	// Read existing JSON data from the file
-
-	jsonData, err := ioutil.ReadFile(jsonFilePath)
-
-	if err != nil {
-		return err
-	}
-
-	// Parse the existing JSON data into a FileChunks struct
-	var fileChunks FileChunks
-	err = json.Unmarshal(jsonData, &fileChunks)
-	if err != nil {
-		return err
-	}
-
-	// Add the new file and its associated chunk names to the Files map in the FileChunks struct
-	fileChunks.Files[fileName] = chunkNames
-
-	// Serialize the updated FileChunks struct to JSON
-	updatedJSON, err := json.Marshal(fileChunks)
-	if err != nil {
-		return err
-	}
-
-	// Write the updated JSON data to the file
-
-	err = ioutil.WriteFile(jsonFilePath, updatedJSON, 0644)
-
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-func addChunkToJSONFile(jsonFilePath string, chunkName string, chunk Chunk) error {
-	// Read existing JSON data from the file
-	jsonData, err := ioutil.ReadFile(jsonFilePath)
-	if err != nil {
-		return err
-	}
-
-	// Parse the existing JSON data into a FileChunks struct
-	var fileChunks FileChunks
-	err = json.Unmarshal(jsonData, &fileChunks)
-	if err != nil {
-		return err
-	}
-
-	// Add the new chunk to the Chunks map in the FileChunks struct
-	fileChunks.Chunks[chunkName] = chunk
-
-	// Serialize the updated FileChunks struct to JSON
-	updatedJSON, err := json.Marshal(fileChunks)
-	if err != nil {
-		return err
-	}
-
-	// Write the updated JSON data to the file
-	err = ioutil.WriteFile(jsonFilePath, updatedJSON, 0644)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func addMetaFileToJSONFileMutex(jsonFilePath string, fileName string, chunkNames []string) error {
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	// call the original function
-	return addMetaFileToJSONFile(jsonFilePath, fileName, chunkNames)
-}
-func addChunkToJSONFileMutex(jsonFilePath string, chunkName string, chunk Chunk) error {
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	// call the original function
-	return addChunkToJSONFile(jsonFilePath, chunkName, chunk)
 }
 
 /////////////////////
 
 func check(err error) {
 	if err != nil {
-		fmt.Println("Error occurred")
+		fmt.Print("Error occurred: ")
 		panic(err)
 	}
 }
@@ -329,21 +225,15 @@ func createDir(storagePath string) error {
 	return nil
 }
 
-func create_random_node_ids() []string {
+func get_route_node_for_chunk() (string, int) {
 
-	rand.Seed(time.Now().UnixNano())
+	for node, value := range registrationMap {
 
-	nums := make(map[int]bool)
-	result := make([]string, 0)
-
-	for len(nums) < 3 {
-		n := rand.Intn(10)
-		if n < 10 && !nums[n] {
-			nums[n] = true
-			result = append(result, strconv.Itoa(n))
+		if value == 1 {
+			return node, 0
 		}
 	}
-	return result
+	return "No active nodes", 1
 }
 func fillEmptyKeys(metadataPath string) error {
 	// Check if the file is empty
@@ -378,20 +268,15 @@ func fillEmptyKeys(metadataPath string) error {
 }
 
 // ReadFileChunks reads the contents of a JSON file and returns a FileChunks struct
-func ReadFileChunks(filePath string) (*FileChunks, error) {
-	fillEmptyKeys("./metadata.json")
-	jsonData, err := ioutil.ReadFile(filePath)
+func Readfile_chunks_list(file_name string) ([]string, error) {
+
+	file_chunks_list, err := getArrayValue(metadb, file_name)
+
 	if err != nil {
 		return nil, err
 	}
 
-	var fileChunks FileChunks
-	err = json.Unmarshal(jsonData, &fileChunks)
-	if err != nil {
-		return nil, err
-	}
-
-	return &fileChunks, nil
+	return file_chunks_list, nil
 }
 
 //////////////////////// UTILS /////////////////////////////////
@@ -407,13 +292,14 @@ func validateHeartbeat(msgHandler *messages.MessageHandler, host string, beat bo
 		// for handling node side interrupt
 		deregister(host)
 		fmt.Println("Remote host - " + host + " got terminated unexpectedly.")
+		msgHandler.Close()
 		return
 	}
 
 	if isRegistered == 0 {
 		isSuccess = false
 		message = "Host not registered yet."
-		fmt.Println("Host - " + host + " not registered yet.")
+		// fmt.Println("Host - " + host + " not registered yet.")
 	}
 
 	// we can use optionally the below technique in which the delay of heartbeat is cheked only after any new heartbeat from that host arrives.
@@ -440,16 +326,21 @@ func validateHeartbeat(msgHandler *messages.MessageHandler, host string, beat bo
 	}
 	msgHandler.Send(wrapper)
 }
-func getActiveHosts() []string {
-	someMapMutex.Lock()
-	defer someMapMutex.Unlock()
+func getActiveHosts() ([]string, int) {
+	// someMapMutex.Lock()
+	// defer someMapMutex.Unlock()
 	var activeHosts []string
 	for host, status := range registrationMap {
 		if status == 1 {
 			activeHosts = append(activeHosts, host)
 		}
 	}
-	return activeHosts
+	count := int(0)
+
+	if len(activeHosts) < 0 {
+		count = 0
+	}
+	return activeHosts, count
 }
 func updateTimeStamp(host string) {
 	someMapMutex.Lock()
@@ -504,20 +395,174 @@ func createNodeConnection(host string, port string) (net.Conn, error) {
 }
 
 func main() {
-	port := os.Args[1]
-	listener, err := net.Listen("tcp", ":"+port)
+	// test()
+
+	listeningPortForNodes := os.Args[1]
+	listenerForNodes, err := net.Listen("tcp", ":"+listeningPortForNodes)
 	if err != nil {
 		log.Fatalln(err.Error())
 		return
 	}
-	go removeInactiveNodesAutomatically()
+	fmt.Println("Listening for Nodes ... on", listeningPortForNodes)
+	// go removeInactiveNodesAutomatically()
+
+	go func() {
+		for {
+			// fmt.Println("waiting for request on orion01", listeningPortForNodes)
+			if nodeConnection, err := listenerForNodes.Accept(); err == nil {
+				nodMessageHandler := messages.NewMessageHandler(nodeConnection)
+				// only handles one client at a time:
+				go handleNodes(nodMessageHandler)
+			}
+		}
+	}()
+	// ------------------------------------------------------------------------ //
+	listeningPortForClient := "21999"
+	listenerForClient, err := net.Listen("tcp", ":"+listeningPortForClient)
+	if err != nil {
+		log.Fatalln(err.Error())
+		return
+	}
+	fmt.Println("Listening for Client ... on", listeningPortForClient)
+
+	go func() {
+		for {
+			// fmt.Println("waiting for request on orion01", listeningPortForClient)
+			if clientConnection, err := listenerForClient.Accept(); err == nil {
+				nodMessageHandler := messages.NewMessageHandler(clientConnection)
+				// only handles one client at a time:
+				go handleClient(nodMessageHandler)
+			}
+		}
+	}()
+
+	select {}
+}
+
+func handleClient(msgHandler *messages.MessageHandler) {
+	defer msgHandler.Close()
+	for {
+		wrapper, err := msgHandler.Receive()
+		// fmt.Println("got the client")
+		if err != nil {
+			fmt.Println("%v\n", err)
+			fmt.Println("%x\n", wrapper)
+
+		}
+		check(err)
+
+		switch msg := wrapper.Msg.(type) {
+		case *messages.Wrapper_RetrieveRequest: /*client*/
+			handleRetrieveRequest(msgHandler, msg.RetrieveRequest)
+		case *messages.Wrapper_UploadFileMetaRequest: /*client*/
+			handleUploadFileMetaRequest(msgHandler, msg.UploadFileMetaRequest)
+		case *messages.Wrapper_ChunkRouteRequest: /*client*/
+			handle_CHUNK_ROUTE_requests(msgHandler, msg.ChunkRouteRequest)
+		case *messages.Wrapper_StoreRequest: /*client*/
+			payload := messages.StoreResponse{Success: true, Message: "You you can store the file"}
+			wrapper := &messages.Wrapper{
+				Msg: &messages.Wrapper_StoreResponse{StoreResponse: &payload},
+			}
+			msgHandler.Send(wrapper)
+
+		default:
+			fmt.Println("Client connection closing")
+
+			return
+		}
+
+	}
+}
+
+func handleNodes(msgHandler *messages.MessageHandler) {
+	defer msgHandler.Close()
 
 	for {
-		fmt.Println("waiting for request on orion02", port)
-		if conn, err := listener.Accept(); err == nil {
-			msgHandler := messages.NewMessageHandler(conn)
-			// only handles one client at a time:
-			go handleRequests(msgHandler)
+		wrapper, err := msgHandler.Receive()
+
+		if err != nil {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		check(err)
+		switch msg := wrapper.Msg.(type) {
+		case *messages.Wrapper_ChunkSaved: /*node*/
+			handleChunkSaved(msgHandler, msg.ChunkSaved)
+		case *messages.Wrapper_Heartbeat: /*node*/
+			validateHeartbeat(msgHandler, msg.Heartbeat.GetHost(), msg.Heartbeat.GetBeat())
+		case *messages.Wrapper_Register: /*node*/
+			register(msg.Register.GetHost())
+
+		default:
+			fmt.Println("Some node closed")
+			return
+
+		}
+
+	}
+}
+
+////////------------ DB OPERATIONS ------------------------------\\\\\\\\\\\\\
+
+func test() {
+}
+
+func getArrayValue(b *bitcask.Bitcask, key string) ([]string, error) {
+	val, err := metadb.Get([]byte(key))
+	res, err := strings.Split(string(val), ","), nil
+
+	if err != nil {
+		return nil, err
+	}
+
+	return res, nil
+}
+
+func getJSONObject(db *bitcask.Bitcask, key string) (map[string]interface{}, error) {
+	// Get the value from the database based on the key
+
+	bytes, err := db.Get([]byte(key))
+	check(err)
+	// Decode the JSON object from bytes
+	var value map[string]interface{}
+	err = json.Unmarshal(bytes, &value)
+	if err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func saveOrUpdateChunkTODB(chunkDB *bitcask.Bitcask, new_chunk_meta Chunk) bool {
+	chunkName := new_chunk_meta.ChunkName
+
+	// Retrieve the existing chunk metadata from the database
+	existing_chunk_bytes, err := chunkDB.Get([]byte(chunkName))
+	if err != nil {
+		// Chunk is not present in the database, create a new metadata object
+		existing_chunk_bytes = []byte("{}")
+	}
+
+	// Decode the existing metadata object from bytes
+	var to_be_updated_chunk map[string]interface{}
+	err = json.Unmarshal(existing_chunk_bytes, &to_be_updated_chunk)
+	check(err)
+
+	// Loop through all the keys of the Chunk struct and update the corresponding values
+	v := reflect.ValueOf(new_chunk_meta)
+	for i := 0; i < v.NumField(); i++ {
+		fieldName := v.Type().Field(i).Name
+		fieldValue := v.Field(i).Interface()
+		if fieldValue != nil {
+			to_be_updated_chunk[fieldName] = fieldValue
 		}
 	}
+
+	// Encode the updated chunk metadata as a JSON object and store it in the database
+	updated_chunk_bytes, err := json.Marshal(to_be_updated_chunk)
+	check(err)
+	err = chunkDB.Put([]byte(chunkName), updated_chunk_bytes)
+	check(err)
+
+	return true
 }
