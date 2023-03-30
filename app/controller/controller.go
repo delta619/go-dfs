@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -57,12 +56,12 @@ func handleRetrieveRequest(msgHandler *messages.MessageHandler, msg *messages.Re
 	file_name := msg.GetFileName()
 
 	chunks_list_names, err := getArrayValue(metadb, file_name)
-	fmt.Println("size 1 - ", len(chunks_list_names))
+	fmt.Printf("Chunks count of %s -> %d \n", file_name, len(chunks_list_names))
 
 	chunk_nodes := make([]string, 0)
-	for _, chunk_name := range chunks_list_names {
-		fmt.Printf("chunk - %s\n", chunk_name)
-		chunkMeta, err := getJSONObject(chunkDB, chunk_name)
+	for i, chunk_name := range chunks_list_names {
+		fmt.Printf("finding route of chunk - %d\n", i)
+		chunkMeta, err := getChunkMetaFromDB(chunk_name)
 		check(err)
 
 		primaryNode := chunkMeta["PrimaryNode"].(string)
@@ -114,6 +113,7 @@ func updateToMeta(file_name string, newChunkNames []string) {
 
 	key := []byte(file_name)
 	value := []byte(chunkNamesStr)
+	fmt.Printf("Saved file meta - %s\n", chunkNamesStr)
 
 	metadb.Put(key, value)
 }
@@ -130,7 +130,8 @@ func handleChunkSaved(msgHandler *messages.MessageHandler, msg *messages.ChunkSa
 	}
 	ok := saveOrUpdateChunkTODB(chunkDB, chunk)
 	if !ok {
-		fmt.Println("Chunk update failed")
+		fmt.Println("Chunk save failed")
+		return
 	}
 }
 func handle_CHUNK_ROUTE_requests(msgHandler *messages.MessageHandler, msg *messages.ChunkRouteRequest) {
@@ -488,7 +489,7 @@ func handleNodes(msgHandler *messages.MessageHandler) {
 		check(err)
 		switch msg := wrapper.Msg.(type) {
 		case *messages.Wrapper_ChunkSaved: /*node*/
-			handleChunkSaved(msgHandler, msg.ChunkSaved)
+			go handleChunkSaved(msgHandler, msg.ChunkSaved)
 		case *messages.Wrapper_Heartbeat: /*node*/
 			validateHeartbeat(msgHandler, msg.Heartbeat.GetHost(), msg.Heartbeat.GetBeat())
 		case *messages.Wrapper_Register: /*node*/
@@ -519,10 +520,10 @@ func getArrayValue(b *bitcask.Bitcask, key string) ([]string, error) {
 	return res, nil
 }
 
-func getJSONObject(db *bitcask.Bitcask, key string) (map[string]interface{}, error) {
+func getChunkMetaFromDB(key string) (map[string]interface{}, error) {
 	// Get the value from the database based on the key
 
-	bytes, err := db.Get([]byte(key))
+	bytes, err := chunkDB.Get([]byte(key))
 	check(err)
 	// Decode the JSON object from bytes
 	var value map[string]interface{}
@@ -536,33 +537,13 @@ func getJSONObject(db *bitcask.Bitcask, key string) (map[string]interface{}, err
 func saveOrUpdateChunkTODB(chunkDB *bitcask.Bitcask, new_chunk_meta Chunk) bool {
 	chunkName := new_chunk_meta.ChunkName
 
-	// Retrieve the existing chunk metadata from the database
-	existing_chunk_bytes, err := chunkDB.Get([]byte(chunkName))
-	if err != nil {
-		// Chunk is not present in the database, create a new metadata object
-		existing_chunk_bytes = []byte("{}")
-	}
+	var upadted_chunk_metadata = make(map[string]interface{})
 
-	// Decode the existing metadata object from bytes
-	var to_be_updated_chunk map[string]interface{}
-	err = json.Unmarshal(existing_chunk_bytes, &to_be_updated_chunk)
+	upadted_chunk_metadata["PrimaryNode"] = new_chunk_meta.PrimaryNode
+	updated_chunkMetaMarshalled, err := json.Marshal(upadted_chunk_metadata)
 	check(err)
-
-	// Loop through all the keys of the Chunk struct and update the corresponding values
-	v := reflect.ValueOf(new_chunk_meta)
-	for i := 0; i < v.NumField(); i++ {
-		fieldName := v.Type().Field(i).Name
-		fieldValue := v.Field(i).Interface()
-		if fieldValue != nil {
-			to_be_updated_chunk[fieldName] = fieldValue
-		}
-	}
-
-	// Encode the updated chunk metadata as a JSON object and store it in the database
-	updated_chunk_bytes, err := json.Marshal(to_be_updated_chunk)
-	check(err)
-	err = chunkDB.Put([]byte(chunkName), updated_chunk_bytes)
-	check(err)
+	fmt.Printf("What saved was %s - %s\n", chunkName, updated_chunkMetaMarshalled)
+	chunkDB.Put([]byte(chunkName), []byte(updated_chunkMetaMarshalled))
 
 	return true
 }

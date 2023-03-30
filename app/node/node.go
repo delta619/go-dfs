@@ -14,7 +14,7 @@ import (
 )
 
 var DATASTORE = "/bigdata/students/amalla2/DATASTORE/"
-var NUM_OF_WORKERS = 5
+var NUM_OF_WORKERS = 1
 var heartbeartController *messages.MessageHandler
 
 func check(err error) {
@@ -30,8 +30,8 @@ type Chunk struct {
 	handler   *messages.MessageHandler
 }
 
-var chunk_saving_channel = make(chan Chunk, 50)
-var chunk_upload_channel = make(chan Chunk, 50)
+var chunk_saving_channel = make(chan Chunk, 1)
+var chunk_upload_channel = make(chan Chunk, 1)
 
 func handleChunkSavingRequest() {
 	// initialize a wait group and a semaphore channel with a buffer size of 5
@@ -43,14 +43,17 @@ func handleChunkSavingRequest() {
 		// acquire the semaphore before executing the goroutine
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(chunk Chunk) {
+		func(chunk Chunk) {
 			defer func() {
 				// release the semaphore after the goroutine is done
 				<-sem
 				wg.Done()
 			}()
 
-			fmt.Println("\n", "LOG:", "Saving chunk", chunk.chunkName)
+			// fmt.Println("\n", "LOG:", "Saving chunk", chunk.chunkName)
+			if (chunk.chunkName == "") || len(chunk.chunkData) == 0 {
+				panic("omg")
+			}
 			err := ioutil.WriteFile(DATASTORE+chunk.chunkName, chunk.chunkData, 0644)
 			if err != nil {
 				log.Fatal(err)
@@ -65,7 +68,6 @@ func handleChunkSavingRequest() {
 			fmt.Println("⬇ ", this_node, chunk.chunkName)
 		}(chunk)
 	}
-	wg.Wait()
 }
 
 func handleChunkDownloadRequest() {
@@ -97,7 +99,7 @@ func handleRequests(msgHandler *messages.MessageHandler) {
 		}
 		switch msg := wrapper.Msg.(type) {
 		case *messages.Wrapper_UploadChunkRequest: /*node*/
-			fmt.Println("UploadChunkRequest received for file", msg.UploadChunkRequest.GetChunkName())
+			// fmt.Println("UploadChunkRequest received for file", msg.UploadChunkRequest.GetChunkName())
 			// save the chunk to disk
 			chunk_data := msg.UploadChunkRequest.GetChunkData()
 			chunk_name := msg.UploadChunkRequest.GetChunkName()
@@ -251,6 +253,7 @@ func main() {
 	defer conn.Close()
 
 	heartbeartController = messages.NewMessageHandler(conn)
+	defer heartbeartController.Close()
 
 	go updateMyHeartbeatAuto(heartbeartController, hostname)
 	go handleOSSignals(hostname, heartbeartController)
@@ -259,6 +262,7 @@ func main() {
 	///////////////////////
 
 	listener, err := net.Listen("tcp", ":"+port) // for clients, those need to connect with our 21001
+	defer listener.Close()
 	if err != nil {
 		log.Fatalln(err.Error())
 		return
@@ -274,8 +278,6 @@ func main() {
 	}
 
 	select {}
-
-	heartbeartController.Close()
 
 }
 
