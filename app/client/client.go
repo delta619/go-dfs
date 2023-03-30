@@ -149,9 +149,9 @@ type Chunk_for_channel struct {
 
 var chunkPushChannel_Chunk = make(chan Chunk_for_channel, 10)
 var ready_to_push_to_node = make(chan Chunk_for_channel, 1)
-var chunk_retreive_channel = make(chan Chunk_for_channel, 1000)
-var chunk_waiting_to_be_saved = make(chan Chunk_for_channel, 1000)
-var some_chunk_got_saved_channel = make(chan Chunk_for_channel, 1000)
+var chunk_retreive_channel = make(chan Chunk_for_channel, 1001)
+var chunk_waiting_to_be_saved = make(chan Chunk_for_channel, 1002)
+var some_chunk_got_saved_channel = make(chan Chunk_for_channel, 1003)
 var all_chunks_received_notification_channel = make(chan bool, 1)
 
 var chunk_reading_rate_limiter_channel = make(chan bool, 1)
@@ -465,12 +465,12 @@ func startChunkWriter() {
 			panic(err)
 		}
 
-		chunk := Chunk_for_channel{
-			chunkName:  chunkMeta.chunkName,
-			chunkBytes: chunkData,
-		}
+		// chunk := Chunk_for_channel{
+		// 	chunkName:  chunkMeta.chunkName,
+		// 	chunkBytes: chunkData,
+		// }
 
-		some_chunk_got_saved_channel <- chunk
+		// `some_chunk_got_saved_channel` <- chunk
 		DOWNLOADED_FILES += 1
 		fmt.Printf("⬇ : %d/%d %s \n", DOWNLOADED_FILES, TOTAL_CHUNKS, chunkMeta.chunkName)
 		if DOWNLOADED_FILES >= int(TOTAL_CHUNKS) {
