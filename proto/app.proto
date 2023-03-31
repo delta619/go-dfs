@@ -53,14 +53,16 @@ message ChunkRouteResponse {
 message ChunkSaved {
     string chunkName = 1;
     string node = 2;
-    bool success = 3;
+    bool replication = 3;
+    bool makePrimary = 4;
+
 }
 
 // As soon as the Chunk gets saved at Node and after ChunkSaved is received, 
 // ChunkReplicaRoute informs node to push tje Chunk to multiple Nodes as per this message
 message ChunkReplicaRoute{
     string chunkName =1;
-    repeated string secondaryNodes = 2;
+    repeated string otherNodes = 2;
 }
 
 message PutChunkReplica{

@@ -27,7 +27,7 @@ var GO_get_the_routes = 1
 var GO_push_to_node = 1
 
 // var OUTPUT = "./out/"
-var CHUNK_IN_MB = 2
+var CHUNK_IN_MB = 7
 
 var UPLOADED_FILES = 0
 var DOWNLOADED_FILES = 0
@@ -115,7 +115,10 @@ func getChunkFromNode() {
 			fmt.Println("\n", "LOG:", "Node down !, Cant Get Chunk", chunk.ChunkName, chunk.PrimaryNode)
 
 			if chunk.UseSecondary == 0 {
+
 				chunk.UseSecondary = 1
+				fmt.Println("\n", "LOG:", "Node down !, Trying Secondary node-", chunk.UseSecondary, chunk.ChunkName, chunk.PrimaryNode)
+
 				chunk_retreive_channel <- chunk
 
 			} else if chunk.UseSecondary != len(chunk.SecondaryNodes) {
@@ -537,7 +540,7 @@ func main() {
 	go handleController()
 
 	for {
-		fmt.Print("---------------------|\n1 -> GET\n2 -> PUT\n3 -> ls\n4 -> ChunkSize\n")
+		fmt.Print("\n---------------------|\n1 -> GET\n2 -> PUT\n3 -> ls\n4 -> ChunkSize\n")
 		var action int
 		_, err := fmt.Scanln(&action)
 		if err != nil {

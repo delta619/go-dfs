@@ -19,7 +19,7 @@ import (
 
 var metadb, _ = bitcask.Open("./meta")
 var chunkDB, _ = bitcask.Open("./chunk")
-var nodesMeta, _ = bitcask.Open("./node")
+var nodesMetaDB, _ = bitcask.Open("./node")
 
 type Chunk struct {
 	ChunkName      string
@@ -38,9 +38,11 @@ var (
 
 var automatic_deregestration_time = 7
 
-// var timeout_for_heartbeat = 5
+var node_down_notification_channel = make(chan string, 1)
 
 func removeInactiveNodesAutomatically() {
+
+	go listenForReplicationOn()
 	// in this technique of managing active/failed nodes, we simply check for every timestamp for registered hosts
 	for {
 		time.Sleep(7 * time.Second)
@@ -50,6 +52,52 @@ func removeInactiveNodesAutomatically() {
 			}
 		}
 	}
+}
+func listenForReplicationOn() {
+	chunks_list_for_replication := make(chan string, 100)
+	go replicateChunks(chunks_list_for_replication)
+
+	for {
+		NODE_DOWN := <-node_down_notification_channel
+		chunks, err := getArrayJsonValue(nodesMetaDB, NODE_DOWN) // get list of affected chunks from DB
+		check(err)
+		fmt.Println("\n", "LOG:", "Chunks affected. -> ", chunks)
+		for _, chunkName := range chunks {
+			chunks_list_for_replication <- strings.Join([]string{chunkName, NODE_DOWN}, ",")
+		}
+	}
+}
+
+func replicateChunks(chunks_list_for_replication chan string) {
+	for {
+		chunk_with_down_host := <-chunks_list_for_replication
+
+		chunk_Name := strings.Split(chunk_with_down_host, ",")[0]
+		down_node := strings.Split(chunk_with_down_host, ",")[1]
+
+		chunk, err := getChunkMetaFromDB(chunk_Name)
+		check(err)
+
+		primary_node := chunk["PrimaryNode"].(string)
+		secondary_nodes := chunk["SecondaryNodes"].([]string)
+
+		excluding_nodes := make([]string, 0)
+
+		if primary_node != down_node {
+			excluding_nodes = append(excluding_nodes, primary_node)
+		}
+
+		for _, secondary_node := range secondary_nodes {
+			if secondary_node != down_node {
+				excluding_nodes = append(excluding_nodes, secondary_node)
+			}
+		}
+		fmt.Println("\n", "LOG:", "Excluding nodes. -> ", excluding_nodes)
+		assignOtherNodes(nodeHandlers[excluding_nodes[0]], chunk_Name, excluding_nodes) // tell any of the current node to pass the data to other node
+
+	}
+
+	// replicaSender
 }
 
 func handleRetrieveRequest(msgHandler *messages.MessageHandler, msg *messages.RetrieveRequest) {
@@ -118,7 +166,7 @@ func updateToMeta(file_name string, newChunkNames []string) {
 
 	key := []byte(file_name)
 	value := []byte(chunkNamesStr)
-	fmt.Printf("Saved file meta - %s\n", chunkNamesStr)
+	// fmt.Printf("Saved file meta - %s\n", chunkNamesStr)
 
 	metadb.Put(key, value)
 }
@@ -130,50 +178,143 @@ func handleChunkSaved(nodeHandler *messages.MessageHandler, msg *messages.ChunkS
 
 	// After getting confirmation, assign the secondary nodes and push the ChunkReplicaRoute to node
 
-	assignSecondaryNodes(nodeHandler, chunkName, primaryNode)
+	assignOtherNodes(nodeHandler, chunkName, []string{primaryNode})
 
 }
 
-func assignSecondaryNodes(nodeHandler *messages.MessageHandler, chunkName string, primaryNode string) {
+func assignOtherNodes(nodeHandler *messages.MessageHandler, chunkName string, existingNodes []string) {
 	active_nodes, _ := getActiveNodes()
 
-	if len(active_nodes) <= 3 {
+	if len(active_nodes) < 2 {
 		fmt.Println("\n", "LOG:", "No active nodes for replication")
 		return
 	}
 
-	selected_nodes := make([]string, 0)
+	new_nodes := make([]string, 0)
+
 	for _, new_node := range active_nodes {
-		if len(selected_nodes) == 2 {
+
+		if len(existingNodes)+len(new_nodes) == 3 { // #assign_total_nodes to maintain replication factor
 			break
 		}
-		if primaryNode != new_node {
-			selected_nodes = append(selected_nodes, new_node)
+
+		existing := false
+		for _, existingNode := range existingNodes {
+			if new_node == existingNode {
+				existing = true
+			}
 		}
+		if !existing {
+			new_nodes = append(new_nodes, new_node)
+		}
+	}
+	fmt.Println("\n", "LOG:", "new nodes. -> ", new_nodes)
+
+	var new_primary_node string
+	var new_secondary_nodes []string
+
+	if len(new_nodes) == 2 { // First time upload case
+		new_primary_node = existingNodes[0]
+		new_secondary_nodes = new_nodes
+
+	} else { // node failure case
+
+		new_primary_node = new_nodes[0]
+		new_secondary_nodes = existingNodes
 	}
 
 	chunk := Chunk{
 		ChunkName:      chunkName,
-		PrimaryNode:    primaryNode,
-		SecondaryNodes: selected_nodes,
+		PrimaryNode:    new_primary_node,
+		SecondaryNodes: new_secondary_nodes,
 	}
+
 	ok := saveOrUpdateChunkTODB(chunkDB, chunk)
 	if !ok {
 		fmt.Println("Chunk save failed")
 		return
 	}
+	fmt.Println("\n", "LOG:", "chunk updated in chunkdb. -> ", chunk)
 
+	updateNodeStatusToDB(chunk)
+
+	fmt.Println("\n", "LOG:", "Node statuses updated. -> ")
+
+	// send info to replicate chunk to other nodes
 	payload := messages.ChunkReplicaRoute{
-		ChunkName:      chunkName,
-		SecondaryNodes: selected_nodes,
+		ChunkName:  chunkName,
+		OtherNodes: new_nodes,
 	}
 
 	wrapper := &messages.Wrapper{
 		Msg: &messages.Wrapper_ChunkReplicaRoute{ChunkReplicaRoute: &payload},
 	}
 	nodeHandler.Send(wrapper)
-	fmt.Println("\n", "LOG:", "Sent replication information of Chunk ", chunkName, "to", selected_nodes)
+	fmt.Println("\n", "LOG:", "Sent replication information of Chunk ", chunkName, "wrapper- ", wrapper)
 
+}
+
+func updateNodeStatusToDB(chunk Chunk) {
+	// only save using the hostname of machine
+	// host := strings.Split(chunk.PrimaryNode, ":")[0]
+	// secondaryHost1 := strings.Split(chunk.SecondaryNodes[0], ":")[0]
+	// secondaryHost2 := strings.Split(chunk.SecondaryNodes[1], ":")[1]
+
+	primary_node := chunk.PrimaryNode
+	secondary_node1 := chunk.SecondaryNodes[0]
+	secondary_node2 := chunk.SecondaryNodes[1]
+
+	addChunkToNode(nodesMetaDB, primary_node, chunk.ChunkName)
+	addChunkToNode(nodesMetaDB, secondary_node1, chunk.ChunkName)
+	addChunkToNode(nodesMetaDB, secondary_node2, chunk.ChunkName)
+	// updated the meta
+
+	// _, err := getArrayJsonValue(nodesMetaDB, primary_node)
+	// check(err)
+
+}
+
+func addChunkToNode(db *bitcask.Bitcask, node string, chunkName string) error {
+	// Get the current list of chunks stored for the node
+	data, err := db.Get([]byte(node))
+	if err != nil && err != bitcask.ErrKeyNotFound {
+		return err
+	}
+
+	// Initialize a new list if the node was not found
+	var chunks []string
+	if err == bitcask.ErrKeyNotFound {
+		chunks = []string{}
+	} else {
+		// Decode the current list from JSON
+		err = json.Unmarshal(data, &chunks)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Check if chunkName is already in the list
+	for _, name := range chunks {
+		if name == chunkName {
+			// Chunk already exists, no need to add it again
+			return nil
+		}
+	}
+
+	// Add the chunk name to the list
+	chunks = append(chunks, chunkName)
+
+	// Encode the updated list as JSON and store it in the key
+	newData, err := json.Marshal(chunks)
+	if err != nil {
+		return err
+	}
+	err = db.Put([]byte(node), newData)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func handle_CHUNK_ROUTE_requests(msgHandler *messages.MessageHandler, msg *messages.ChunkRouteRequest) {
@@ -394,22 +535,25 @@ func updateTimeStamp(host string) {
 
 	someMapMutex.Unlock()
 }
-func register(hostname string) {
+
+var nodeHandlers = make(map[string]*messages.MessageHandler)
+
+func register(hostname string, msg_handler *messages.MessageHandler) {
 	someMapMutex.Lock()
 
 	unique_node := hostname
 	registrationMap[unique_node] = 1
 	timestampMap[unique_node] = time.Now()
 	fmt.Println("Registered host - " + unique_node)
-
+	nodeHandlers[unique_node] = msg_handler
 	someMapMutex.Unlock()
 }
 func deregister(hostname string) {
 	someMapMutex.Lock()
 
 	registrationMap[hostname] = 0
-	fmt.Println("Host deregistered - " + hostname)
-
+	fmt.Println("Host deregistered - Replication starting." + hostname)
+	node_down_notification_channel <- hostname
 	someMapMutex.Unlock()
 }
 
@@ -448,15 +592,15 @@ func main() {
 		return
 	}
 	fmt.Println("Listening for Nodes ... on", listeningPortForNodes)
-	// go removeInactiveNodesAutomatically()
+	go removeInactiveNodesAutomatically()
 
 	go func() {
 		for {
 			// fmt.Println("waiting for request on orion01", listeningPortForNodes)
 			if nodeConnection, err := listenerForNodes.Accept(); err == nil {
-				nodMessageHandler := messages.NewMessageHandler(nodeConnection)
+				dataServiceHandler := messages.NewMessageHandler(nodeConnection)
 				// only handles one client at a time:
-				go handleNodes(nodMessageHandler)
+				go handleNodes(dataServiceHandler)
 			}
 		}
 	}()
@@ -473,9 +617,9 @@ func main() {
 		for {
 			// fmt.Println("waiting for request on orion01", listeningPortForClient)
 			if clientConnection, err := listenerForClient.Accept(); err == nil {
-				nodMessageHandler := messages.NewMessageHandler(clientConnection)
+				dataServiceHandler := messages.NewMessageHandler(clientConnection)
 				// only handles one client at a time:
-				go handleClient(nodMessageHandler)
+				go handleClient(dataServiceHandler)
 			}
 		}
 	}()
@@ -536,8 +680,7 @@ func handleNodes(msgHandler *messages.MessageHandler) {
 		case *messages.Wrapper_Heartbeat: /*node*/
 			validateHeartbeat(msgHandler, msg.Heartbeat.GetHost(), msg.Heartbeat.GetBeat())
 		case *messages.Wrapper_Register: /*node*/
-			register(msg.Register.GetHost())
-
+			register(msg.Register.GetHost(), msgHandler)
 		default:
 			fmt.Println("Some node closed")
 			return
@@ -561,6 +704,15 @@ func getArrayValue(b *bitcask.Bitcask, key string) ([]string, error) {
 	}
 
 	return res, nil
+}
+
+func getArrayJsonValue(nodeMetaDB *bitcask.Bitcask, key string) ([]string, error) {
+	val, err := nodeMetaDB.Get([]byte(key))
+	check(err)
+	var valUnMarshalled = make([]string, 0)
+	json.Unmarshal(val, &valUnMarshalled)
+
+	return valUnMarshalled, nil
 }
 
 func getChunkMetaFromDB(key string) (map[string]interface{}, error) {
@@ -599,7 +751,7 @@ func saveOrUpdateChunkTODB(chunkDB *bitcask.Bitcask, new_chunk_meta Chunk) bool 
 	updated_chunkMetaMarshalled, err := json.Marshal(updated_chunk_metadata)
 
 	check(err)
-	fmt.Printf("What saved was %s - %s\n", chunkName, updated_chunkMetaMarshalled)
+	// fmt.Printf("What saved was %s - %s\n", chunkName, updated_chunkMetaMarshalled)
 	chunkDB.Put([]byte(chunkName), []byte(updated_chunkMetaMarshalled))
 
 	return true
