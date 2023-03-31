@@ -88,7 +88,7 @@ func handleChunkDownloadRequest() {
 		fmt.Printf("⬆ %s - %s\n", this_node, chunkMeta.chunkName)
 	}
 }
-func handleRequests(msgHandler *messages.MessageHandler) {
+func handleDataServices(msgHandler *messages.MessageHandler) {
 	for {
 		wrapper, err := msgHandler.Receive()
 		if err != nil {
@@ -118,9 +118,68 @@ func handleRequests(msgHandler *messages.MessageHandler) {
 				handler:   msgHandler,
 			}
 			chunk_upload_channel <- chunkMeta
+
+		case *messages.Wrapper_PutChunkReplica:
+			chunkName := msg.PutChunkReplica.GetChunkName()
+			chunkData := msg.PutChunkReplica.GetChunkData()
+
+			handlePutChunkReplica(chunkName, chunkData)
 		}
+
 	}
 
+}
+
+func handlePutChunkReplica(chunkName string, chunkData []byte) {
+
+	ioutil.WriteFile(DATASTORE+chunkName, chunkData, 0644)
+	fmt.Printf("🌥️ Replica %s saved to  - %s:%s \n", chunkName, os.Args[1], os.Args[2])
+
+}
+
+func handleReplicaCreationOfChunk(chunkName string, secondary_nodes []string) {
+
+	hostname := os.Args[1]
+	port := os.Args[2]
+
+	replica1 := secondary_nodes[0]
+	replica2 := secondary_nodes[1]
+
+	fmt.Printf("I - %s:%s, Sending chunk to %s and %s \n", hostname, port, secondary_nodes[0], secondary_nodes[1])
+
+	/////////   1st replica/////////////
+
+	inter_node_connection, err := net.Dial("tcp", replica1)
+	check(err)
+	inter_node_connection_handler := messages.NewMessageHandler(inter_node_connection)
+
+	chunk_data, err := ioutil.ReadFile(DATASTORE + chunkName)
+	putChunkReplicaPayload := messages.PutChunkReplica{ChunkName: chunkName, ChunkData: chunk_data}
+
+	wrapper := &messages.Wrapper{
+		Msg: &messages.Wrapper_PutChunkReplica{PutChunkReplica: &putChunkReplicaPayload},
+	}
+
+	inter_node_connection_handler.Send(wrapper)
+	fmt.Printf("I - %s:%s, Sent replica to %s \n", hostname, port, secondary_nodes[0])
+
+	/////////   2nd replica/////////////
+	inter_node_connection, err = net.Dial("tcp", replica2)
+	check(err)
+	inter_node_connection_handler = messages.NewMessageHandler(inter_node_connection)
+
+	chunk_data, err = ioutil.ReadFile(DATASTORE + chunkName)
+	putChunkReplicaPayload = messages.PutChunkReplica{ChunkName: chunkName, ChunkData: chunk_data}
+
+	wrapper = &messages.Wrapper{
+		Msg: &messages.Wrapper_PutChunkReplica{PutChunkReplica: &putChunkReplicaPayload},
+	}
+
+	inter_node_connection_handler.Send(wrapper)
+	fmt.Printf("I - %s:%s, Sent replica to %s \n", hostname, port, secondary_nodes[1])
+
+	// defer inter_node_connection_handler.Close()
+	// defer inter_node_connection.Close()
 }
 
 var chunks_count_uploaded = 0
@@ -152,12 +211,19 @@ func worker(heartbeartController *messages.MessageHandler, host string) {
 				register(heartbeartController, host)
 				continue
 			}
-			// fmt.Println(" Up ")
+
+			// fmt.Print("Response to my heartbeat from Controller")
 
 		case *messages.Wrapper_Register:
 			// fmt.Println("Registration confirmation received from Controller")
 		case *messages.Wrapper_FileRequest:
 			// fmt.Println("File req received from Controller.")
+		case *messages.Wrapper_ChunkReplicaRoute:
+			chunkName := msg.ChunkReplicaRoute.ChunkName
+			secondary_nodes := msg.ChunkReplicaRoute.SecondaryNodes
+
+			go handleReplicaCreationOfChunk(chunkName, secondary_nodes)
+
 		}
 		// reset the retry count if the message was successfully processed
 	}
@@ -262,7 +328,6 @@ func main() {
 	///////////////////////
 
 	listener, err := net.Listen("tcp", ":"+port) // for clients, those need to connect with our 21001
-	defer listener.Close()
 	if err != nil {
 		log.Fatalln(err.Error())
 		return
@@ -273,11 +338,12 @@ func main() {
 		if conn, err := listener.Accept(); err == nil {
 			msgHandler := messages.NewMessageHandler(conn)
 			// only handles one client at a time:
-			go handleRequests(msgHandler)
+			go handleDataServices(msgHandler)
 		}
 	}
 
 	select {}
+	defer listener.Close()
 
 }
 

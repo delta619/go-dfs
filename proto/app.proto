@@ -48,14 +48,31 @@ message ChunkRouteResponse {
     string fileName = 7;
 }
 
+// A Registration of Chunk by Node to Controller as soon as Chunk get saved in any node.
+// Updates the node meta in Controller
 message ChunkSaved {
     string chunkName = 1;
     string node = 2;
     bool success = 3;
 }
 
+// As soon as the Chunk gets saved at Node and after ChunkSaved is received, 
+// ChunkReplicaRoute informs node to push tje Chunk to multiple Nodes as per this message
+message ChunkReplicaRoute{
+    string chunkName =1;
+    repeated string secondaryNodes = 2;
+}
 
+message PutChunkReplica{
+    string chunkName = 1;
+    bytes chunkData = 2;
 
+}
+
+message GetChunkReplica{
+    string chunkName = 1;
+    bytes chunkData = 2;
+}
 
 
 message Heartbeat{
@@ -92,11 +109,18 @@ message RetrieveRequest {
     string file_name = 1;
 }
 
+message Chunk{
+    string chunkName = 1;
+    string primaryNode = 2;
+    repeated string secondaryNodes = 3;
+    string fileName = 4;
+}
 // Message used for providing an existing file
 message RetrieveResponse {
     repeated string chunk_names = 1;
     repeated string chunk_nodes = 2;
-    string file_name = 3;
+    string fileName = 3;
+    repeated Chunk chunks = 4;
 
 }
 
@@ -131,6 +155,8 @@ message Request{
 }
 
 
+
+
 message Wrapper {
     oneof msg {
         Action action = 1;
@@ -151,6 +177,9 @@ message Wrapper {
         UploadChunkRequest upload_chunk_request = 12;
 
         ChunkSaved chunk_saved = 13;
+        ChunkReplicaRoute chunkReplicaRoute = 19;
+        PutChunkReplica putChunkReplica = 20;
+        GetChunkReplica getChunkReplica = 21;
 
         UploadFileMetaRequest upload_file_meta_request = 14;
 

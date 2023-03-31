@@ -33,7 +33,7 @@ var UPLOADED_FILES = 0
 var DOWNLOADED_FILES = 0
 var TOTAL_CHUNKS = int64(0)
 
-var CHUNK_SIZE = int64(CHUNK_IN_MB * 1024 * 1024) // 20 MB
+var CHUNK_SIZE = int64(CHUNK_IN_MB * 1024 * 1024) // Depends on CHUNK_IN_MB
 
 func clean() {
 	// Reset global variables
@@ -102,67 +102,92 @@ func createNodeHandler(node string) (*messages.MessageHandler, bool, error) {
 func getChunkFromNode() {
 	for {
 		chunk := <-chunk_retreive_channel
-		// fmt.Println("\n", "LOG:", "Asking node for the chunk", chunk.chunkName)
+		// fmt.Println("\n", "LOG:", "Asking node for the chunk", chunk.ChunkName)
 
-		nodeHandler, isExisting, err := createNodeHandler(chunk.primaryNode)
-		if err != nil {
-			fmt.Println("\n", "LOG:", "Node down !, Cant Get Chunk", chunk.chunkName, chunk.primaryNode)
+		selectedNode := chunk.PrimaryNode
+
+		if chunk.UseSecondary > 0 {
+			selectedNode = chunk.SecondaryNodes[chunk.UseSecondary-1]
 		}
+
+		nodeHandler, isExisting, err := createNodeHandler(selectedNode)
+		if err != nil {
+			fmt.Println("\n", "LOG:", "Node down !, Cant Get Chunk", chunk.ChunkName, chunk.PrimaryNode)
+
+			if chunk.UseSecondary == 0 {
+				chunk.UseSecondary = 1
+				chunk_retreive_channel <- chunk
+
+			} else if chunk.UseSecondary != len(chunk.SecondaryNodes) {
+				chunk.UseSecondary += 1
+				fmt.Println("\n", "LOG:", "Node down !, Trying Secondary node-", chunk.UseSecondary, chunk.ChunkName, chunk.PrimaryNode)
+				chunk_retreive_channel <- chunk
+
+			} else {
+				fmt.Println("\n", "LOG:", "Chunk irretrievable, FAILED", chunk.ChunkName, chunk.PrimaryNode)
+				// Show some Error and come out
+			}
+			continue
+
+		}
+
 		check(err)
 
 		payload := messages.ChunkRequest{
-			ChunkName: chunk.chunkName,
+			ChunkName: chunk.ChunkName,
 		}
+
 		wrapper := messages.Wrapper{
 			Msg: &messages.Wrapper_ChunkRequest{ChunkRequest: &payload},
 		}
 		nodeHandler.Send(&wrapper)
 
 		if !isExisting {
-			// fmt.Println("\n", "LOG:", "Go wait", chunk.primaryNode)
+			// fmt.Println("\n", "LOG:", "Go wait", chunk.PrimaryNode)
 			go waitForChunkFromNode(nodeHandler)
 		}
 	}
 }
 
-func getSize(filename string) int64 {
-	fileInfo, err := os.Stat(filename)
+func getSize(FileName string) int64 {
+	fileInfo, err := os.Stat(FileName)
 	if err != nil {
 		fmt.Println("Error getting file info:", err)
 		return 0
 	}
-	// fmt.Printf("Size of file %s is %d bytes\n", filename, fileInfo.Size())
+	// fmt.Printf("Size of file %s is %d bytes\n", FileName, fileInfo.Size())
 	return fileInfo.Size()
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 type Chunk_for_channel struct {
-	chunkName      string
-	fileName       string
-	chunkBytes     []byte
+	ChunkName      string
+	FileName       string
+	ChunkData      []byte
 	currentPart    int64
-	totalParts     int64
-	chunkSize      int64
-	primaryNode    string
+	TotalParts     int64
+	ChunkSize      int64
+	PrimaryNode    string
 	SecondaryNodes []string
+	UseSecondary   int // if 0 then primary, otherwise the index of secondary nodes
 }
 
-var chunkPushChannel_Chunk = make(chan Chunk_for_channel, 10)
+var chunkPushChannel_Chunk = make(chan Chunk_for_channel, 3)
 var ready_to_push_to_node = make(chan Chunk_for_channel, 1)
-var chunk_retreive_channel = make(chan Chunk_for_channel, 1001)
-var chunk_waiting_to_be_saved = make(chan Chunk_for_channel, 1002)
-var some_chunk_got_saved_channel = make(chan Chunk_for_channel, 1003)
-var all_chunks_received_notification_channel = make(chan bool, 1)
+var chunk_retreive_channel = make(chan Chunk_for_channel, 100)
+var chunk_waiting_to_be_saved = make(chan Chunk_for_channel, 100)
+var some_chunk_got_saved_channel = make(chan Chunk_for_channel, 100)
+var all_chunks_received_notification_channel = make(chan bool, 100)
 
 var chunk_reading_rate_limiter_channel = make(chan bool, 1)
-var all_chunks_uploaded_notification_channel = make(chan int, 100)
-var all_chunks_downloaded_notification_channel = make(chan bool, 100)
+var all_chunks_uploaded_notification_channel = make(chan int, 999)
+var all_chunks_downloaded_notification_channel = make(chan bool, 999)
 
 // notifications of actions
-var put_action_completed_notification = make(chan bool, 10)
-var get_action_completed_notification = make(chan bool, 10)
+var put_action_completed_notification = make(chan bool, 999)
+var get_action_completed_notification = make(chan bool, 999)
 
-var file_constructed_notification = make(chan bool, 100)
+var file_constructed_notification = make(chan bool, 999)
 
 var wg sync.WaitGroup
 
@@ -207,16 +232,16 @@ func createRoutedChunksForUpload(file_name string) {
 			go func(part int64) {
 				// fmt.Println("\n", "LOG:", "Reading.", part, TOTAL_CHUNKS)
 				chunk_reading_rate_limiter_channel <- true
-				chunkData := readChunkBytes(file_name, part, CHUNK_SIZE)
+				chunkData := readChunkData(file_name, part, CHUNK_SIZE)
 				READING_COUNTER += 1
 				chunkMD5 := fmt.Sprintf("%x", md5.Sum(chunkData))
 				fileChunks[part] = chunkMD5
 				chunk_for_channel := Chunk_for_channel{
-					chunkName:   chunkMD5,
+					ChunkName:   chunkMD5,
 					currentPart: part,
-					totalParts:  numChunks,
-					chunkSize:   CHUNK_SIZE,
-					fileName:    file_name,
+					TotalParts:  numChunks,
+					ChunkSize:   CHUNK_SIZE,
+					FileName:    file_name,
 				}
 				<-chunk_reading_rate_limiter_channel
 				chunkPushChannel_Chunk <- chunk_for_channel
@@ -249,11 +274,11 @@ func get_the_routes() {
 		chunk := <-chunkPushChannel_Chunk
 		// time.Sleep(100 * time.Millisecond)
 		chunk_payload := messages.ChunkRouteRequest{
-			ChunkName:   chunk.chunkName,
+			ChunkName:   chunk.ChunkName,
 			CurrentPart: chunk.currentPart,
-			TotalParts:  chunk.totalParts,
-			ChunkSize:   chunk.chunkSize,
-			FileName:    chunk.fileName,
+			TotalParts:  chunk.TotalParts,
+			ChunkSize:   chunk.ChunkSize,
+			FileName:    chunk.FileName,
 		}
 
 		wrapper := messages.Wrapper{
@@ -266,15 +291,15 @@ func get_the_routes() {
 func push_to_node() {
 	for {
 		chunk := <-ready_to_push_to_node
-		// fmt.Println("\n", "LOG:", "Connecting to node", chunk.primaryNode, chunk.chunkName)
+		// fmt.Println("\n", "LOG:", "Connecting to node", chunk.PrimaryNode, chunk.ChunkName)
 
-		nodeHandler, _, err := createNodeHandler(chunk.primaryNode)
+		nodeHandler, _, err := createNodeHandler(chunk.PrimaryNode)
 		check(err)
 
-		chunk_with_data := readChunkBytes(chunk.fileName, chunk.currentPart, chunk.chunkSize)
+		chunk_with_data := readChunkData(chunk.FileName, chunk.currentPart, chunk.ChunkSize)
 		chunk_payload := messages.UploadChunkRequest{
-			ChunkName: chunk.chunkName,
-			FileName:  chunk.fileName,
+			ChunkName: chunk.ChunkName,
+			FileName:  chunk.FileName,
 			ChunkData: chunk_with_data,
 		}
 
@@ -284,18 +309,18 @@ func push_to_node() {
 		nodeHandler.Send(&wrapper)
 
 		UPLOADED_FILES += 1
-		fmt.Printf("⬆ : %d/%d %s \n", UPLOADED_FILES, TOTAL_CHUNKS, chunk.chunkName)
+		fmt.Printf("⬆ : %d/%d %s \n", UPLOADED_FILES, TOTAL_CHUNKS, chunk.ChunkName)
 		check(err)
-		if UPLOADED_FILES >= int(chunk.totalParts) {
+		if UPLOADED_FILES >= int(chunk.TotalParts) {
 			all_chunks_uploaded_notification_channel <- int(TOTAL_CHUNKS)
 		}
 		// Close the connection after use to avoid resource leakage
 	}
 }
 
-func readChunkBytes(fileName string, currentPart int64, chunkSize int64) []byte {
-	startByte := currentPart * chunkSize
-	fullPath := TEST_FILES_DIRECTORY + fileName
+func readChunkData(FileName string, currentPart int64, ChunkSize int64) []byte {
+	startByte := currentPart * ChunkSize
+	fullPath := TEST_FILES_DIRECTORY + FileName
 	file, err := os.Open(fullPath)
 
 	fileSize := getSize(fullPath)
@@ -305,7 +330,7 @@ func readChunkBytes(fileName string, currentPart int64, chunkSize int64) []byte 
 	}
 	defer file.Close()
 
-	endByte := startByte + int64(chunkSize) // End of the chunk
+	endByte := startByte + int64(ChunkSize) // End of the chunk
 	if endByte > fileSize {
 		endByte = fileSize
 	}
@@ -347,22 +372,42 @@ func getAction(file_name string) {
 
 }
 
-func retreiveAllChunks(file_name string, chunkNames []string, chunkNodes []string) {
-	TOTAL_CHUNKS = int64(len(chunkNames))
+func retrieveAllChunks(chunks []*messages.Chunk) {
+	// Get the file name and initialize arrays to store chunk names and primary nodes
+	file_name := chunks[0].GetFileName()
 
-	go waitForAllChunks(file_name, chunkNames)
+	chunk_names := make([]string, 0)
+	chunksPrimaryNodes := make([]string, 0)
+	chunksSecondaryNodes := make([][]string, 0)
+
+	// Loop over all chunks and append their names and primary nodes to the corresponding arrays
+	for _, chunk := range chunks {
+		chunk_names = append(chunk_names, chunk.GetChunkName())
+		chunksPrimaryNodes = append(chunksPrimaryNodes, chunk.GetPrimaryNode())
+		chunksSecondaryNodes = append(chunksSecondaryNodes, chunk.GetSecondaryNodes())
+	}
+
+	fmt.Println(chunk_names)
+	fmt.Println("---------------")
+	fmt.Println(chunksPrimaryNodes)
+
+	TOTAL_CHUNKS = int64(len(chunks))
+
+	go waitForAllChunks(file_name, chunk_names)
 	// meanwhile
 	go getChunkFromNode()
 	// meanwhile
 	go startChunkWriter()
 	// meanwhile
-	go constructFileWhenReady(file_name, chunkNames)
+	go constructFileWhenReady(file_name, chunk_names)
 	// meanwhile
-	for i, _ := range chunkNames {
+	for i, _ := range chunk_names {
 
 		chunk := Chunk_for_channel{
-			chunkName:   chunkNames[i],
-			primaryNode: chunkNodes[i],
+			ChunkName:      chunk_names[i],
+			PrimaryNode:    chunksPrimaryNodes[i],
+			SecondaryNodes: chunksSecondaryNodes[i],
+			UseSecondary:   0,
 		}
 
 		// fmt.Println("\n", "LOG:", "Inserted in request ", i)
@@ -372,7 +417,7 @@ func retreiveAllChunks(file_name string, chunkNames []string, chunkNodes []strin
 
 }
 
-func waitForAllChunks(file_name string, chunkNames []string) {
+func waitForAllChunks(file_name string, ChunkNames []string) {
 
 	for {
 
@@ -385,7 +430,7 @@ func waitForAllChunks(file_name string, chunkNames []string) {
 	}
 }
 
-func constructFileWhenReady(file_name string, chunkNames []string) {
+func constructFileWhenReady(file_name string, ChunkNames []string) {
 	for {
 		// Create a new file with the given name
 		// fmt.Println("\n", "Blocked at:", "all_chunks_downloaded_notification_channel.")
@@ -400,8 +445,8 @@ func constructFileWhenReady(file_name string, chunkNames []string) {
 		defer f.Close()
 
 		// Append each chunk to the file
-		for _, chunkName := range chunkNames {
-			chunkPath := SANDBOX + chunkName
+		for _, ChunkName := range ChunkNames {
+			chunkPath := SANDBOX + ChunkName
 			chunkFile, err := os.Open(chunkPath)
 			if err != nil {
 				panic(err)
@@ -438,10 +483,10 @@ func waitForChunkFromNode(nodeHandler *messages.MessageHandler) {
 		case *messages.Wrapper_ChunkResponse:
 
 			chunk := Chunk_for_channel{
-				chunkName:  msg.ChunkResponse.GetChunkName(),
-				chunkBytes: msg.ChunkResponse.GetChunkData(),
+				ChunkName: msg.ChunkResponse.GetChunkName(),
+				ChunkData: msg.ChunkResponse.GetChunkData(),
 			}
-			// fmt.Println("\n", "LOG:", "Receiving chunk", chunk.chunkName)
+			// fmt.Println("\n", "LOG:", "Receiving chunk", chunk.ChunkName)
 			chunk_waiting_to_be_saved <- chunk
 		}
 
@@ -454,25 +499,25 @@ func startChunkWriter() {
 		// fmt.Println("\n", "LOG:", "Debug A ")
 		// fmt.Println("\n", "Blocked at:", "chunk_waiting_to_be_saved.")
 		chunkMeta := <-chunk_waiting_to_be_saved
-		// fmt.Println("\n", "LOG:", "Writing chunk.", chunkMeta.chunkName)
+		// fmt.Println("\n", "LOG:", "Writing chunk.", chunkMeta.ChunkName)
 		// fmt.Println("\n", "LOG:", "Debug B ")
 
-		chunkData := chunkMeta.chunkBytes
+		chunkData := chunkMeta.ChunkData
 
-		chunkPath := SANDBOX + chunkMeta.chunkName
+		chunkPath := SANDBOX + chunkMeta.ChunkName
 		err := os.WriteFile(chunkPath, chunkData, 0644)
 		if err != nil {
 			panic(err)
 		}
 
 		// chunk := Chunk_for_channel{
-		// 	chunkName:  chunkMeta.chunkName,
-		// 	chunkBytes: chunkData,
+		// 	ChunkName:  chunkMeta.ChunkName,
+		// 	ChunkData: chunkData,
 		// }
 
 		// `some_chunk_got_saved_channel` <- chunk
 		DOWNLOADED_FILES += 1
-		fmt.Printf("⬇ : %d/%d %s \n", DOWNLOADED_FILES, TOTAL_CHUNKS, chunkMeta.chunkName)
+		fmt.Printf("⬇ : %d/%d %s \n", DOWNLOADED_FILES, TOTAL_CHUNKS, chunkMeta.ChunkName)
 		if DOWNLOADED_FILES >= int(TOTAL_CHUNKS) {
 			all_chunks_downloaded_notification_channel <- true
 		}
@@ -492,7 +537,7 @@ func main() {
 	go handleController()
 
 	for {
-		fmt.Print("---------------------|\n1 -> GET\n2 -> PUT\n3 -> ls\n4 -> exit\n")
+		fmt.Print("---------------------|\n1 -> GET\n2 -> PUT\n3 -> ls\n4 -> ChunkSize\n")
 		var action int
 		_, err := fmt.Scanln(&action)
 		if err != nil {
@@ -502,23 +547,23 @@ func main() {
 		switch action {
 		case 1: //GET
 			// transfer file code here
-			fmt.Print("Enter filename: ")
-			var filename string
-			// _, err := fmt.Scanln(&filename)
-			filename = os.Args[1]
-			getAction(filename)
+			fmt.Print("Enter FileName: ")
+			var FileName string
+			// _, err := fmt.Scanln(&FileName)
+			FileName = os.Args[1]
+			getAction(FileName)
 			<-get_action_completed_notification
 			clean()
 			fmt.Printf("Completed GET.")
 			continue
 		case 2: //PUT
 			// transfer file code here
-			fmt.Print("Enter filename: ")
-			var filename string
-			// _, err := fmt.Scanln(&filename)
-			filename = os.Args[1]
+			fmt.Print("Enter FileName: ")
+			var FileName string
+			// _, err := fmt.Scanln(&FileName)
+			FileName = os.Args[1]
 
-			putAction(filename)
+			putAction(FileName)
 			<-put_action_completed_notification
 			clean()
 			fmt.Printf("Completed PUT\n")
@@ -526,6 +571,16 @@ func main() {
 		case 3:
 			// exit code here
 			fmt.Println("ls command is run.")
+			continue
+		case 4:
+			var chunkSize int
+			fmt.Println("Enter chunk size in MB - ")
+
+			_, err := fmt.Scanln(&chunkSize)
+			check(err)
+			CHUNK_IN_MB = int(chunkSize)
+			CHUNK_SIZE = int64(CHUNK_IN_MB * 1024 * 1024) // Depends on CHUNK_IN_MB
+
 			continue
 		default:
 			fmt.Println("Invalid action. Exiting...")
@@ -564,7 +619,7 @@ func handleController() {
 		switch msg := wrapper.Msg.(type) {
 		case *messages.Wrapper_RetrieveResponse:
 			fmt.Println("\n", "LOG:", "Retreival response. chunks count", len(msg.RetrieveResponse.ChunkNames))
-			go retreiveAllChunks(msg.RetrieveResponse.GetFileName(), msg.RetrieveResponse.GetChunkNames(), msg.RetrieveResponse.GetChunkNodes())
+			go retrieveAllChunks(msg.RetrieveResponse.GetChunks())
 			continue
 		case *messages.Wrapper_StoreResponse:
 			if msg.StoreResponse.GetSuccess() == true {
@@ -577,30 +632,30 @@ func handleController() {
 			continue
 		case *messages.Wrapper_ChunkRouteResponse:
 
-			chunkName := msg.ChunkRouteResponse.GetChunkName()
+			ChunkName := msg.ChunkRouteResponse.GetChunkName()
 
 			chunk := Chunk_for_channel{
-				chunkName:   chunkName,
-				primaryNode: msg.ChunkRouteResponse.GetNode(),
+				ChunkName:   ChunkName,
+				PrimaryNode: msg.ChunkRouteResponse.GetNode(),
 				currentPart: msg.ChunkRouteResponse.GetCurrentPart(),
-				totalParts:  msg.ChunkRouteResponse.GetTotalParts(),
-				chunkSize:   msg.ChunkRouteResponse.GetChunkSize(),
-				fileName:    msg.ChunkRouteResponse.GetFileName(),
+				TotalParts:  msg.ChunkRouteResponse.GetTotalParts(),
+				ChunkSize:   msg.ChunkRouteResponse.GetChunkSize(),
+				FileName:    msg.ChunkRouteResponse.GetFileName(),
 			}
 
 			if msg.ChunkRouteResponse.GetSuccess() {
 
 				// fmt.Println("\n", "LOG:", "ChunkRouteResponse response.\n", msg.ChunkRouteResponse)
-				// fmt.Println("\n", "LOG:", "ChunkRouteResponse success.", chunk.chunkName)
+				// fmt.Println("\n", "LOG:", "ChunkRouteResponse success.", chunk.ChunkName)
 
 				ready_to_push_to_node <- chunk
 			} else {
-				fmt.Println("\n", "LOG:", "ChunkRouteResponse failed.", chunk.chunkName)
+				fmt.Println("\n", "LOG:", "ChunkRouteResponse failed.", chunk.ChunkName)
 			}
 			continue
 		default:
 			fmt.Println("Unexpected message received")
-			continue
+			return
 
 		}
 	}

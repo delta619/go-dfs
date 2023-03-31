@@ -2,7 +2,7 @@
 
 port_prefix=21 # Put your assigned port prefix here.
                # See: https://www.cs.usfca.edu/~mmalensek/cs677/schedule/materials/ports.html
-nodes=7      # Number of nodes to run
+nodes=10      # Number of nodes to run
 
 # Server list. You can comment out servers that you don't want to use with '#'
 servers=(
