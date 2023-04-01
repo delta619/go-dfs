@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime/debug"
 	"sync"
+	"time"
 )
 
 var TEST_FILES_DIRECTORY = "/bigdata/mmalensek/project1/"
@@ -528,6 +529,32 @@ func startChunkWriter() {
 
 }
 
+func listFilesOnServer() {
+	// create a payload of action
+	payload := messages.ListRequest{}
+
+	wrapper := messages.Wrapper{
+		Msg: &messages.Wrapper_ListRequest{ListRequest: &payload},
+	}
+	controllerHandler.Send(&wrapper)
+	return
+}
+
+var ls_command_completed_notification_channel = make(chan bool, 1)
+
+func handleListResponse(filenames []string, statusList []int64) {
+	for i, file_name := range filenames {
+		status := ""
+		if statusList[i] <= 0 {
+			status = "(Not available for some time)"
+		}
+		fmt.Printf("%d - %s %s\n", i+1, file_name, status)
+		time.Sleep(100 * time.Millisecond)
+	}
+	ls_command_completed_notification_channel <- true
+	return
+}
+
 // stores the assembled file
 
 func main() {
@@ -573,7 +600,8 @@ func main() {
 			continue
 		case 3:
 			// exit code here
-			fmt.Println("ls command is run.")
+			listFilesOnServer()
+			<-ls_command_completed_notification_channel
 			continue
 		case 4:
 			var chunkSize int
@@ -655,6 +683,9 @@ func handleController() {
 			} else {
 				fmt.Println("\n", "LOG:", "ChunkRouteResponse failed.", chunk.ChunkName)
 			}
+			continue
+		case *messages.Wrapper_ListResponse:
+			go handleListResponse(msg.ListResponse.GetFileNames(), msg.ListResponse.GetStatusList())
 			continue
 		default:
 			fmt.Println("Unexpected message received")

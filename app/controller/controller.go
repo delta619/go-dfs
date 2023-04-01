@@ -463,6 +463,35 @@ func Readfile_chunks_list(file_name string) ([]string, error) {
 	return file_chunks_list, nil
 }
 
+//////////////////////// LISTING ///////////////////////////////
+
+func handleListRequest(msgHandler *messages.MessageHandler) {
+	filesList := make([]string, 0)
+
+	keys := metadb.Keys()
+
+	for key := range keys {
+		filesList = append(filesList, string(key))
+	}
+	statusList := make([]int64, len(filesList))
+	for i := range statusList {
+		statusList[i] = int64(0)
+	}
+
+	payload := messages.ListResponse{
+		FileNames:  filesList,
+		StatusList: statusList,
+	}
+
+	wrapper := messages.Wrapper{
+		Msg: &messages.Wrapper_ListResponse{ListResponse: &payload},
+	}
+
+	msgHandler.Send(&wrapper)
+	fmt.Println("\n", "LOG:", "Sent Ls information of client ", filesList, " ", statusList)
+
+}
+
 //////////////////////// UTILS /////////////////////////////////
 
 func validateHeartbeat(msgHandler *messages.MessageHandler, host string, beat bool) {
@@ -652,7 +681,8 @@ func handleClient(msgHandler *messages.MessageHandler) {
 				Msg: &messages.Wrapper_StoreResponse{StoreResponse: &payload},
 			}
 			msgHandler.Send(wrapper)
-
+		case *messages.Wrapper_ListRequest:
+			handleListRequest(msgHandler)
 		default:
 			fmt.Println("Client connection closing")
 
