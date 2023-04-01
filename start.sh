@@ -7,7 +7,7 @@ nodes=5      # Number of nodes to run
 # Server list. You can comment out servers that you don't want to use with '#'
 servers=(
     # "orion01"
-    # "orion02"
+     "orion02"
     "orion03"
     "orion04"
     "orion05"

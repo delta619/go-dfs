@@ -555,6 +555,23 @@ func handleListResponse(filenames []string, statusList []int64) {
 	return
 }
 
+func handleDelete(file_name string) {
+	payload := messages.DeleteRequest{
+		FileName: file_name,
+	}
+	wrapper := messages.Wrapper{
+		Msg: &messages.Wrapper_DeleteRequest{DeleteRequest: &payload},
+	}
+
+	controllerHandler.Send(&wrapper)
+}
+
+var file_delete_complete_notification_channel = make(chan bool, 1)
+
+func handleDeleteResponse(file_name string, success bool) {
+	file_delete_complete_notification_channel <- success
+}
+
 // stores the assembled file
 
 func main() {
@@ -567,7 +584,7 @@ func main() {
 	go handleController()
 
 	for {
-		fmt.Print("\n---------------------|\n1 -> GET\n2 -> PUT\n3 -> ls\n4 -> ChunkSize\n")
+		fmt.Print("\n---------------------|\n1 -> GET\n2 -> PUT\n3 -> ls\n4 -> Delete\n5 -> ChunkSize\n")
 		var action int
 		_, err := fmt.Scanln(&action)
 		if err != nil {
@@ -579,8 +596,8 @@ func main() {
 			// transfer file code here
 			fmt.Print("Enter FileName: ")
 			var FileName string
-			// _, err := fmt.Scanln(&FileName)
-			FileName = os.Args[1]
+			_, err := fmt.Scanln(&FileName)
+			check(err)
 			getAction(FileName)
 			<-get_action_completed_notification
 			clean()
@@ -590,9 +607,8 @@ func main() {
 			// transfer file code here
 			fmt.Print("Enter FileName: ")
 			var FileName string
-			// _, err := fmt.Scanln(&FileName)
-			FileName = os.Args[1]
-
+			_, err := fmt.Scanln(&FileName)
+			check(err)
 			putAction(FileName)
 			<-put_action_completed_notification
 			clean()
@@ -604,6 +620,20 @@ func main() {
 			<-ls_command_completed_notification_channel
 			continue
 		case 4:
+			fmt.Printf("Enter file name to delete.")
+			var FileName string
+			_, err := fmt.Scanln(&FileName)
+			check(err)
+			go handleDelete(FileName)
+			success := <-file_delete_complete_notification_channel
+			fmt.Printf("%s delete %ssuccessful\n", FileName, func() string {
+				if success {
+					return ""
+				} else {
+					return "un"
+				}
+			}())
+		case 5:
 			var chunkSize int
 			fmt.Println("Enter chunk size in MB - ")
 
@@ -655,7 +685,7 @@ func handleController() {
 		case *messages.Wrapper_StoreResponse:
 			if msg.StoreResponse.GetSuccess() == true {
 				fmt.Println("\nAllowed to upload file")
-				go createRoutedChunksForUpload(os.Args[1])
+				go createRoutedChunksForUpload(msg.StoreResponse.FileName)
 			} else {
 				fmt.Println("File already present on server")
 
@@ -687,6 +717,8 @@ func handleController() {
 		case *messages.Wrapper_ListResponse:
 			go handleListResponse(msg.ListResponse.GetFileNames(), msg.ListResponse.GetStatusList())
 			continue
+		case *messages.Wrapper_DeleteResponse:
+			go handleDeleteResponse(msg.DeleteResponse.GetFileName(), msg.DeleteResponse.GetSuccess())
 		default:
 			fmt.Println("Unexpected message received")
 			return

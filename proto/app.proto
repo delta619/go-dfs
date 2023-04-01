@@ -104,6 +104,7 @@ message StoreRequest {
 message StoreResponse {
     bool success = 1;
     string message = 2;
+    string file_name = 3;
 }
 
 // Message used for retrieving an existing file
@@ -128,9 +129,23 @@ message RetrieveResponse {
 
 // Message used for deleting an existing file
 message DeleteRequest {
-string file_name = 1;
+string fileName = 1;
 }
 
+message DeleteResponse {
+string fileName = 1;
+bool success = 2;
+}
+
+message DeleteChunk {
+    string ChunkName = 1;
+}
+
+message DeleteChunkAck {
+    string chunkName = 1;
+    bool success =2;
+    string node = 3;
+}
 
 // Message used for listing all files in the system
 message ListRequest {
@@ -196,6 +211,12 @@ message Wrapper {
 
         ListRequest list_request = 22;
         ListResponse list_response = 23;
+
+        DeleteRequest delete_request = 24;
+        DeleteResponse delete_response = 25;
+
+        DeleteChunk delete_chunk = 26;
+        DeleteChunkAck delete_chunk_ack = 27;
     }
 }
 

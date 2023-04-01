@@ -2,6 +2,7 @@ package main
 
 import (
 	"app/messages"
+	"app/utils"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,11 @@ import (
 var metadb, _ = bitcask.Open("./meta")
 var chunkDB, _ = bitcask.Open("./chunk")
 var nodesMetaDB, _ = bitcask.Open("./node")
+
+const (
+	PRIMARY_NODE    = "PrimaryNode"
+	SECONDARY_NODES = "SecondaryNodes"
+)
 
 type Chunk struct {
 	ChunkName      string
@@ -78,8 +84,8 @@ func replicateChunks(chunks_list_for_replication chan string) {
 		chunk, err := getChunkMetaFromDB(chunk_Name)
 		check(err)
 
-		primary_node := chunk["PrimaryNode"].(string)
-		secondary_nodes := chunk["SecondaryNodes"].([]string)
+		primary_node := chunk[PRIMARY_NODE].(string)
+		secondary_nodes := chunk[SECONDARY_NODES].([]string)
 
 		excluding_nodes := make([]string, 0)
 
@@ -93,7 +99,9 @@ func replicateChunks(chunks_list_for_replication chan string) {
 			}
 		}
 		fmt.Println("\n", "LOG:", "Excluding nodes. -> ", excluding_nodes)
-		assignOtherNodes(nodeHandlers[excluding_nodes[0]], chunk_Name, excluding_nodes) // tell any of the current node to pass the data to other node
+		nodeHandler, err := getNodeHandler(excluding_nodes[0])
+		check(err)
+		assignOtherNodes(nodeHandler, chunk_Name, excluding_nodes) // tell any of the current node to pass the data to other node
 
 	}
 
@@ -117,13 +125,13 @@ func handleRetrieveRequest(msgHandler *messages.MessageHandler, msg *messages.Re
 		check(err)
 		// fmt.Printf("LOG:", "Chunk meta out is .%#v\n", chunkMeta)
 
-		primaryNode := chunkMeta["PrimaryNode"].(string)
+		primaryNode := chunkMeta[PRIMARY_NODE].(string)
 		chunk_nodes = append(chunk_nodes, primaryNode)
 
 		chunk := messages.Chunk{
 			ChunkName:      chunk_name,
 			PrimaryNode:    primaryNode,
-			SecondaryNodes: chunkMeta["SecondaryNodes"].([]string),
+			SecondaryNodes: chunkMeta[SECONDARY_NODES].([]string),
 			FileName:       file_name,
 		}
 		chunks = append(chunks, &chunk)
@@ -186,7 +194,7 @@ func assignOtherNodes(nodeHandler *messages.MessageHandler, chunkName string, ex
 	active_nodes, _ := getActiveNodes()
 
 	if len(active_nodes) < 2 {
-		fmt.Println("\n", "LOG:", "No active nodes for replication")
+		// fmt.Println("\n", "LOG:", "No active nodes for replication")
 		return
 	}
 
@@ -208,7 +216,7 @@ func assignOtherNodes(nodeHandler *messages.MessageHandler, chunkName string, ex
 			new_nodes = append(new_nodes, new_node)
 		}
 	}
-	fmt.Println("\n", "LOG:", "new nodes. -> ", new_nodes)
+	// fmt.Println("\n", "LOG:", "new nodes. -> ", new_nodes)
 
 	var new_primary_node string
 	var new_secondary_nodes []string
@@ -229,16 +237,16 @@ func assignOtherNodes(nodeHandler *messages.MessageHandler, chunkName string, ex
 		SecondaryNodes: new_secondary_nodes,
 	}
 
-	ok := saveOrUpdateChunkTODB(chunkDB, chunk)
+	ok := saveOrUpdateChunkMetaToDB(chunkDB, chunk)
 	if !ok {
 		fmt.Println("Chunk save failed")
 		return
 	}
-	fmt.Println("\n", "LOG:", "chunk updated in chunkdb. -> ", chunk)
+	// fmt.Println("\n", "LOG:", "chunk updated in chunkdb. -> ", chunk)
 
 	updateNodeStatusToDB(chunk)
 
-	fmt.Println("\n", "LOG:", "Node statuses updated. -> ")
+	// fmt.Println("\n", "LOG:", "Node statuses updated. -> ")
 
 	// send info to replicate chunk to other nodes
 	payload := messages.ChunkReplicaRoute{
@@ -250,7 +258,7 @@ func assignOtherNodes(nodeHandler *messages.MessageHandler, chunkName string, ex
 		Msg: &messages.Wrapper_ChunkReplicaRoute{ChunkReplicaRoute: &payload},
 	}
 	nodeHandler.Send(wrapper)
-	fmt.Println("\n", "LOG:", "Sent replication information of Chunk ", chunkName, "wrapper- ", wrapper)
+	// fmt.Println("\n", "LOG:", "Sent replication information of Chunk ", chunkName, "wrapper- ", wrapper)
 
 }
 
@@ -274,11 +282,11 @@ func updateNodeStatusToDB(chunk Chunk) {
 
 }
 
-func addChunkToNode(db *bitcask.Bitcask, node string, chunkName string) error {
+func getChunkList(db *bitcask.Bitcask, node string) ([]string, error) {
 	// Get the current list of chunks stored for the node
 	data, err := db.Get([]byte(node))
 	if err != nil && err != bitcask.ErrKeyNotFound {
-		return err
+		return nil, err
 	}
 
 	// Initialize a new list if the node was not found
@@ -289,8 +297,31 @@ func addChunkToNode(db *bitcask.Bitcask, node string, chunkName string) error {
 		// Decode the current list from JSON
 		err = json.Unmarshal(data, &chunks)
 		if err != nil {
-			return err
+			return nil, err
 		}
+	}
+
+	return chunks, nil
+}
+
+func replaceChunkList(db *bitcask.Bitcask, node string, chunks []string) error {
+	// Encode the updated list as JSON and store it in the key
+	newData, err := json.Marshal(chunks)
+	if err != nil {
+		return err
+	}
+	err = db.Put([]byte(node), newData)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func addChunkToNode(db *bitcask.Bitcask, node string, chunkName string) error {
+	chunks, err := getChunkList(db, node)
+	if err != nil {
+		return err
 	}
 
 	// Check if chunkName is already in the list
@@ -304,17 +335,7 @@ func addChunkToNode(db *bitcask.Bitcask, node string, chunkName string) error {
 	// Add the chunk name to the list
 	chunks = append(chunks, chunkName)
 
-	// Encode the updated list as JSON and store it in the key
-	newData, err := json.Marshal(chunks)
-	if err != nil {
-		return err
-	}
-	err = db.Put([]byte(node), newData)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return replaceChunkList(db, node, chunks)
 }
 
 func handle_CHUNK_ROUTE_requests(msgHandler *messages.MessageHandler, msg *messages.ChunkRouteRequest) {
@@ -419,49 +440,6 @@ func get_route_node_for_chunk() (string, int) {
 	}
 	return "No active nodes", 1
 }
-func fillEmptyKeys(metadataPath string) error {
-	// Check if the file is empty
-	fileInfo, err := os.Stat(metadataPath)
-	if os.IsNotExist(err) {
-		// Create an empty file if it doesn't exist
-		_, err := os.Create(metadataPath)
-		if err != nil {
-			return err
-		}
-		// Get file info again after creating the file
-		fileInfo, err = os.Stat(metadataPath)
-	}
-
-	if fileInfo.Size() == 0 {
-		// Initialize the metadata with default values
-		metadata := make(map[string]interface{})
-		metadata["chunks"] = make(map[string]Chunk)
-		metadata["files"] = make(map[string][]string)
-		// Serialize the metadata to JSON
-		metadataBytes, err := json.Marshal(metadata)
-		if err != nil {
-			return err
-		}
-		// Write the JSON data to the file
-		err = ioutil.WriteFile(metadataPath, metadataBytes, 0644)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// ReadFileChunks reads the contents of a JSON file and returns a FileChunks struct
-func Readfile_chunks_list(file_name string) ([]string, error) {
-
-	file_chunks_list, err := getArrayValue(metadb, file_name)
-
-	if err != nil {
-		return nil, err
-	}
-
-	return file_chunks_list, nil
-}
 
 //////////////////////// LISTING ///////////////////////////////
 
@@ -475,7 +453,7 @@ func handleListRequest(msgHandler *messages.MessageHandler) {
 	}
 	statusList := make([]int64, len(filesList))
 	for i := range statusList {
-		statusList[i] = int64(0)
+		statusList[i] = int64(1)
 	}
 
 	payload := messages.ListResponse{
@@ -488,8 +466,115 @@ func handleListRequest(msgHandler *messages.MessageHandler) {
 	}
 
 	msgHandler.Send(&wrapper)
-	fmt.Println("\n", "LOG:", "Sent Ls information of client ", filesList, " ", statusList)
+	// fmt.Println("\n", "LOG:", "Sent Ls information of client ", filesList, " ", statusList)
 
+}
+
+/////////////////////// DELETION ////////////////////////////////
+
+var deleteFileManager = make(map[string]map[string]bool) // map of map of bool
+
+func handleFileDelete(msgHandler *messages.MessageHandler, file_name string) {
+
+	go listenToDeletedChunks(msgHandler, file_name)
+	chunksList, err := getArrayValue(metadb, file_name)
+	check(err)
+
+	for _, chunkName := range chunksList {
+		deleteChunk(chunkName)
+	}
+
+}
+
+func deleteChunk(chunkname string) {
+
+	chunkMeta, err := getChunkMetaFromDB(chunkname)
+	check(err)
+
+	storageNodes := make([]string, 0)
+	storageNodes = append(storageNodes, chunkMeta[PRIMARY_NODE].(string))
+	storageNodes = append(storageNodes, chunkMeta[SECONDARY_NODES].([]string)...)
+
+	// send action to each node
+	for _, node := range storageNodes {
+		// send delete file action
+		payload := messages.DeleteChunk{
+			ChunkName: chunkname,
+		}
+
+		wrapper := messages.Wrapper{
+			Msg: &messages.Wrapper_DeleteChunk{DeleteChunk: &payload},
+		}
+
+		nodeHandler, err := getNodeHandler(node)
+		check(err)
+		nodeHandler.Send(&wrapper)
+
+	}
+
+}
+
+var full_chunk_deletion_notification = make(chan string, 1)
+
+func handleChunkDeleteAck(msg *messages.DeleteChunkAck) {
+	chunkName := msg.GetChunkName()
+	deleteNode := msg.GetNode()
+	success := msg.GetSuccess()
+	if !success {
+		fmt.Print("something went wrong while deleting chunk from node.")
+		return
+	}
+
+	chunkMeta, err := getChunkMetaFromDB(chunkName)
+	check(err)
+
+	currentNodes := utils.GetAllNodesFromChunkMeta(chunkMeta)
+	currentNodes = utils.RemoveElementFromList(currentNodes, deleteNode)
+	if len(currentNodes) == 0 {
+		// Notify full Chunk Delettion
+		full_chunk_deletion_notification <- chunkName // if the chunk is fully deleted, then inform the delete file maintainer about the chunk
+	} else if len(currentNodes) == 1 {
+		chunkMeta[PRIMARY_NODE] = currentNodes[0]
+	} else {
+		chunkMeta[PRIMARY_NODE] = currentNodes[0]
+		chunkMeta[SECONDARY_NODES] = currentNodes[1:]
+	}
+
+	chunk := Chunk{
+		ChunkName:      chunkName,
+		PrimaryNode:    chunkMeta[PRIMARY_NODE].(string),
+		SecondaryNodes: chunkMeta[SECONDARY_NODES].([]string),
+	}
+
+	saveOrUpdateChunkMetaToDB(chunkDB, chunk)
+
+	nodeChunksList, err := getArrayJsonValue(nodesMetaDB, deleteNode)
+	check(err)
+	updatedChunksList := utils.RemoveElementFromList(nodeChunksList, chunkName)
+	err = replaceChunkList(nodesMetaDB, deleteNode, updatedChunksList)
+	check(err)
+
+}
+
+func listenToDeletedChunks(msgHandler *messages.MessageHandler, file_name string) {
+	for {
+		chunk_name := <-full_chunk_deletion_notification
+
+		delete(deleteFileManager[file_name], chunk_name)
+		if len(deleteFileManager[file_name]) == 0 {
+			payload := messages.DeleteResponse{
+				FileName: file_name,
+			}
+			wrapper := messages.Wrapper{
+				Msg: &messages.Wrapper_DeleteResponse{DeleteResponse: &payload},
+			}
+			msgHandler.Send(&wrapper)
+
+			metadb.Delete([]byte(file_name))
+			fmt.Printf("Log: File meta deleted - %s", file_name)
+			return
+		}
+	}
 }
 
 //////////////////////// UTILS /////////////////////////////////
@@ -574,13 +659,14 @@ func register(hostname string, msg_handler *messages.MessageHandler) {
 	registrationMap[unique_node] = 1
 	timestampMap[unique_node] = time.Now()
 	fmt.Println("Registered host - " + unique_node)
-	nodeHandlers[unique_node] = msg_handler
+	setNodeHandler(unique_node, msg_handler)
 	someMapMutex.Unlock()
 }
 func deregister(hostname string) {
 	someMapMutex.Lock()
 
 	registrationMap[hostname] = 0
+	setNodeHandler(hostname, nil)
 	fmt.Println("Host deregistered - Replication starting." + hostname)
 	node_down_notification_channel <- hostname
 	someMapMutex.Unlock()
@@ -589,26 +675,47 @@ func deregister(hostname string) {
 // ////////////// Node connector /////////////////////////
 var nodeConnections = make(map[string]net.Conn)
 
-func createNodeConnection(host string, port string) (net.Conn, error) {
-	addr := fmt.Sprintf("%s:%s", host, port)
-	conn, ok := nodeConnections[addr]
+func getNodeConnection(node string) (net.Conn, error) {
+	conn, ok := nodeConnections[node]
 	if ok {
 		// connection already exists, return it
 		return conn, nil
 	}
 
 	// connection doesn't exist, create a new one
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.Dial("tcp", node)
 	if err != nil {
 		return nil, err
 	}
 	someMapMutex.Lock()
 
-	nodeConnections[addr] = conn
+	nodeConnections[node] = conn
 
 	someMapMutex.Unlock()
 
 	return conn, nil
+}
+
+func getNodeHandler(node string) (*messages.MessageHandler, error) {
+
+	if nodeHandlers[node] != nil {
+		return nodeHandlers[node], nil
+	}
+
+	conn, err := getNodeConnection(node)
+	if err != nil {
+		return nil, err
+	}
+
+	nodeHandler := messages.NewMessageHandler(conn)
+	setNodeHandler(node, nodeHandler)
+	return nodeHandler, nil
+}
+
+func setNodeHandler(node string, handler *messages.MessageHandler) {
+	mutex.Lock()
+	nodeHandlers[node] = handler
+	mutex.Unlock()
 }
 
 func main() {
@@ -676,13 +783,15 @@ func handleClient(msgHandler *messages.MessageHandler) {
 		case *messages.Wrapper_ChunkRouteRequest: /*client*/
 			handle_CHUNK_ROUTE_requests(msgHandler, msg.ChunkRouteRequest)
 		case *messages.Wrapper_StoreRequest: /*client*/
-			payload := messages.StoreResponse{Success: true, Message: "You you can store the file"}
+			payload := messages.StoreResponse{Success: true, Message: "You you can store the file", FileName: msg.StoreRequest.FileName}
 			wrapper := &messages.Wrapper{
 				Msg: &messages.Wrapper_StoreResponse{StoreResponse: &payload},
 			}
 			msgHandler.Send(wrapper)
 		case *messages.Wrapper_ListRequest:
 			handleListRequest(msgHandler)
+		case *messages.Wrapper_DeleteRequest:
+			handleFileDelete(msgHandler, msg.DeleteRequest.FileName)
 		default:
 			fmt.Println("Client connection closing")
 
@@ -711,6 +820,9 @@ func handleNodes(msgHandler *messages.MessageHandler) {
 			validateHeartbeat(msgHandler, msg.Heartbeat.GetHost(), msg.Heartbeat.GetBeat())
 		case *messages.Wrapper_Register: /*node*/
 			register(msg.Register.GetHost(), msgHandler)
+		case *messages.Wrapper_DeleteChunkAck:
+			handleChunkDeleteAck(msg.DeleteChunkAck)
+
 		default:
 			fmt.Println("Some node closed")
 			return
@@ -736,8 +848,8 @@ func getArrayValue(b *bitcask.Bitcask, key string) ([]string, error) {
 	return res, nil
 }
 
-func getArrayJsonValue(nodeMetaDB *bitcask.Bitcask, key string) ([]string, error) {
-	val, err := nodeMetaDB.Get([]byte(key))
+func getArrayJsonValue(nodesMetaDB *bitcask.Bitcask, key string) ([]string, error) {
+	val, err := nodesMetaDB.Get([]byte(key))
 	check(err)
 	var valUnMarshalled = make([]string, 0)
 	json.Unmarshal(val, &valUnMarshalled)
@@ -756,26 +868,26 @@ func getChunkMetaFromDB(key string) (map[string]interface{}, error) {
 	if err != nil {
 		return nil, err
 	}
-	if chunk_obj["SecondaryNodes"] != nil {
-		secondary_nodes, ok := chunk_obj["SecondaryNodes"].(string)
+	if chunk_obj[SECONDARY_NODES] != nil {
+		secondary_nodes, ok := chunk_obj[SECONDARY_NODES].(string)
 		if !ok {
 			return nil, fmt.Errorf("SecondaryNodes is not a string")
 		}
 		nodes := strings.Split(secondary_nodes, ",")
-		chunk_obj["SecondaryNodes"] = nodes
+		chunk_obj[SECONDARY_NODES] = nodes
 	}
 
 	return chunk_obj, nil
 }
 
-func saveOrUpdateChunkTODB(chunkDB *bitcask.Bitcask, new_chunk_meta Chunk) bool {
+func saveOrUpdateChunkMetaToDB(chunkDB *bitcask.Bitcask, new_chunk_meta Chunk) bool {
 	chunkName := new_chunk_meta.ChunkName
 
 	var updated_chunk_metadata = make(map[string]interface{})
 
-	updated_chunk_metadata["PrimaryNode"] = new_chunk_meta.PrimaryNode
+	updated_chunk_metadata[PRIMARY_NODE] = new_chunk_meta.PrimaryNode
 	if new_chunk_meta.SecondaryNodes != nil {
-		updated_chunk_metadata["SecondaryNodes"] = strings.Join(new_chunk_meta.SecondaryNodes, ",")
+		updated_chunk_metadata[SECONDARY_NODES] = strings.Join(new_chunk_meta.SecondaryNodes, ",")
 	}
 
 	updated_chunkMetaMarshalled, err := json.Marshal(updated_chunk_metadata)
@@ -786,3 +898,5 @@ func saveOrUpdateChunkTODB(chunkDB *bitcask.Bitcask, new_chunk_meta Chunk) bool 
 
 	return true
 }
+
+/////////////////////// Set

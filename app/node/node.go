@@ -170,6 +170,32 @@ func sendReplicasNow(chunkName string, other_nodes []string) {
 	// defer inter_node_connection.Close()
 }
 
+///////////////// DELETE ///////////////////
+
+func handleDeleteChunk(msgHandler *messages.MessageHandler, chunkName string) {
+	success := true
+	err := os.Remove(DATASTORE + chunkName)
+	fmt.Printf("Log: deleted %s %s\n", os.Args[1]+":"+os.Args[2], chunkName)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("Warning: trying to delete a chunk which doesnt exists\n")
+		} else {
+			success = false
+		}
+	}
+	fmt.Println("Chunk deleted successfully")
+
+	payload := messages.DeleteChunkAck{
+		ChunkName: chunkName,
+		Success:   success,
+		Node:      os.Args[1] + ":" + os.Args[2],
+	}
+	wrapper := messages.Wrapper{
+		Msg: &messages.Wrapper_DeleteChunkAck{DeleteChunkAck: &payload},
+	}
+	msgHandler.Send(&wrapper)
+}
+
 var chunks_count_uploaded = 0
 
 func worker(heartbeartController *messages.MessageHandler, host string) {
@@ -211,7 +237,8 @@ func worker(heartbeartController *messages.MessageHandler, host string) {
 			secondary_nodes := msg.ChunkReplicaRoute.OtherNodes
 
 			go sendReplicasNow(chunkName, secondary_nodes)
-
+		case *messages.Wrapper_DeleteChunk:
+			handleDeleteChunk(heartbeartController, msg.DeleteChunk.GetChunkName())
 		}
 		// reset the retry count if the message was successfully processed
 	}
