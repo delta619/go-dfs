@@ -81,6 +81,7 @@ message Heartbeat{
     string host = 1;
     bool beat = 2;
     string message = 3;
+    uint64 disk_space = 4;
 }
 
 message Register{

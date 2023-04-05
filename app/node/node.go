@@ -238,7 +238,7 @@ func worker(heartbeartController *messages.MessageHandler, host string) {
 
 			go sendReplicasNow(chunkName, secondary_nodes)
 		case *messages.Wrapper_DeleteChunk:
-			handleDeleteChunk(heartbeartController, msg.DeleteChunk.GetChunkName())
+			go handleDeleteChunk(heartbeartController, msg.DeleteChunk.GetChunkName())
 		}
 		// reset the retry count if the message was successfully processed
 	}
@@ -247,8 +247,18 @@ func worker(heartbeartController *messages.MessageHandler, host string) {
 
 func updateMyHeartbeatAuto(heartbeartController *messages.MessageHandler, host string) {
 	for {
+		var stat syscall.Statfs_t
+		wd, err := syscall.Getwd()
+		if err != nil {
+			fmt.Println("Error getting current directory:", err)
+			return
+		}
+		syscall.Statfs(wd, &stat)
+
+		available_size := stat.Bavail * uint64(stat.Bsize) / 1024 / 1024
+
 		// create heartbeat payload and send it after every 5sec
-		heartbeat := messages.Heartbeat{Host: host, Beat: true}
+		heartbeat := messages.Heartbeat{Host: host, Beat: true, DiskSpace: available_size}
 		wrapper := &messages.Wrapper{
 			Msg: &messages.Wrapper_Heartbeat{Heartbeat: &heartbeat},
 		}

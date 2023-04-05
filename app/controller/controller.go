@@ -51,7 +51,7 @@ func removeInactiveNodesAutomatically() {
 	go listenForReplicationOn()
 	// in this technique of managing active/failed nodes, we simply check for every timestamp for registered hosts
 	for {
-		time.Sleep(7 * time.Second)
+		time.Sleep(2 * time.Second)
 		for key, value := range timestampMap {
 			if time.Since(value) > time.Duration(6*time.Second) && registrationMap[key] == 1 {
 				deregister(key)
@@ -67,7 +67,7 @@ func listenForReplicationOn() {
 		NODE_DOWN := <-node_down_notification_channel
 		chunks, err := getArrayJsonValue(nodesMetaDB, NODE_DOWN) // get list of affected chunks from DB
 		check(err)
-		fmt.Println("\n", "LOG:", "Chunks affected. -> ", chunks)
+		// fmt.Println("\n", "LOG:", "Chunks affected. -> ", chunks)
 		for _, chunkName := range chunks {
 			chunks_list_for_replication <- strings.Join([]string{chunkName, NODE_DOWN}, ",")
 		}
@@ -158,7 +158,7 @@ func handleRetrieveRequest(msgHandler *messages.MessageHandler, msg *messages.Re
 		Msg: &messages.Wrapper_RetrieveResponse{RetrieveResponse: &payload},
 	}
 	msgHandler.Send(wrapper)
-	fmt.Println("\n", "LOG:", "Retreival response sent")
+	// fmt.Println("\n", "LOG:", "Retreival response sent")
 }
 
 func handleUploadFileMetaRequest(msgHandler *messages.MessageHandler, msg *messages.UploadFileMetaRequest) {
@@ -193,33 +193,30 @@ func handleChunkSaved(nodeHandler *messages.MessageHandler, msg *messages.ChunkS
 func assignOtherNodes(nodeHandler *messages.MessageHandler, chunkName string, existingNodes []string) {
 	active_nodes, _ := getActiveNodes()
 
-	if len(active_nodes) < 2 {
-		// fmt.Println("\n", "LOG:", "No active nodes for replication")
-		return
-	}
+	// if len(active_nodes) < 2 {
+	// 	// fmt.Println("\n", "LOG:", "No active nodes for replication")
+	// 	return
+	// }
 
 	new_nodes := make([]string, 0)
 
 	for _, new_node := range active_nodes {
-
 		if len(existingNodes)+len(new_nodes) == 3 { // #assign_total_nodes to maintain replication factor
 			break
 		}
-
-		existing := false
 		for _, existingNode := range existingNodes {
 			if new_node == existingNode {
-				existing = true
+				continue
 			}
 		}
-		if !existing {
-			new_nodes = append(new_nodes, new_node)
-		}
+		new_nodes = append(new_nodes, new_node)
 	}
+
 	// fmt.Println("\n", "LOG:", "new nodes. -> ", new_nodes)
 
 	var new_primary_node string
 	var new_secondary_nodes []string
+	_ = new_secondary_nodes
 
 	if len(new_nodes) == 2 { // First time upload case
 		new_primary_node = existingNodes[0]
@@ -234,7 +231,8 @@ func assignOtherNodes(nodeHandler *messages.MessageHandler, chunkName string, ex
 	chunk := Chunk{
 		ChunkName:      chunkName,
 		PrimaryNode:    new_primary_node,
-		SecondaryNodes: new_secondary_nodes,
+		SecondaryNodes: []string{new_primary_node, new_primary_node}, // for testing under single node
+		// SecondaryNodes: new_secondary_nodes, // for prod use
 	}
 
 	ok := saveOrUpdateChunkMetaToDB(chunkDB, chunk)
@@ -479,8 +477,9 @@ func handleFileDelete(msgHandler *messages.MessageHandler, file_name string) {
 	go listenToDeletedChunks(msgHandler, file_name)
 	chunksList, err := getArrayValue(metadb, file_name)
 	check(err)
-
+	deleteFileManager[file_name] = make(map[string]bool, 0)
 	for _, chunkName := range chunksList {
+		deleteFileManager[file_name][chunkName] = true
 		deleteChunk(chunkName)
 	}
 
@@ -571,7 +570,7 @@ func listenToDeletedChunks(msgHandler *messages.MessageHandler, file_name string
 			msgHandler.Send(&wrapper)
 
 			metadb.Delete([]byte(file_name))
-			fmt.Printf("Log: File meta deleted - %s", file_name)
+			fmt.Printf("Log: File meta deleted - %s\n", file_name)
 			return
 		}
 	}
@@ -579,7 +578,7 @@ func listenToDeletedChunks(msgHandler *messages.MessageHandler, file_name string
 
 //////////////////////// UTILS /////////////////////////////////
 
-func validateHeartbeat(msgHandler *messages.MessageHandler, host string, beat bool) {
+func validateHeartbeat(msgHandler *messages.MessageHandler, host string, beat bool, disk_space uint64) {
 	// if we send an isIssuccess-false then client seends to send a Registration request
 	isRegistered := registrationMap[host]
 	isSuccess := true
@@ -611,6 +610,7 @@ func validateHeartbeat(msgHandler *messages.MessageHandler, host string, beat bo
 	someMapMutex.Unlock()
 
 	if isSuccess {
+		fmt.Printf("Disk space of %s is %d MB\n", host, disk_space)
 		// fmt.Println("Heartbeart updated successfully. " + host)
 		updateTimeStamp(host)
 	}
@@ -667,8 +667,8 @@ func deregister(hostname string) {
 
 	registrationMap[hostname] = 0
 	setNodeHandler(hostname, nil)
-	fmt.Println("Host deregistered - Replication starting." + hostname)
-	node_down_notification_channel <- hostname
+	fmt.Println("Host deregistered." + hostname)
+	// node_down_notification_channel <- hostname
 	someMapMutex.Unlock()
 }
 
@@ -817,7 +817,7 @@ func handleNodes(msgHandler *messages.MessageHandler) {
 		case *messages.Wrapper_ChunkSaved: /*node*/
 			go handleChunkSaved(msgHandler, msg.ChunkSaved)
 		case *messages.Wrapper_Heartbeat: /*node*/
-			validateHeartbeat(msgHandler, msg.Heartbeat.GetHost(), msg.Heartbeat.GetBeat())
+			validateHeartbeat(msgHandler, msg.Heartbeat.GetHost(), msg.Heartbeat.GetBeat(), msg.Heartbeat.GetDiskSpace())
 		case *messages.Wrapper_Register: /*node*/
 			register(msg.Register.GetHost(), msgHandler)
 		case *messages.Wrapper_DeleteChunkAck:
