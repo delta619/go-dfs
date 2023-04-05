@@ -610,7 +610,7 @@ func validateHeartbeat(msgHandler *messages.MessageHandler, host string, beat bo
 	someMapMutex.Unlock()
 
 	if isSuccess {
-		fmt.Printf("Disk space of %s is %d MB\n", host, disk_space)
+		// fmt.Printf("Disk space of %s is %d MB\n", host, disk_space) // TODO
 		// fmt.Println("Heartbeart updated successfully. " + host)
 		updateTimeStamp(host)
 	}

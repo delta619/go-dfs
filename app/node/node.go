@@ -248,12 +248,8 @@ func worker(heartbeartController *messages.MessageHandler, host string) {
 func updateMyHeartbeatAuto(heartbeartController *messages.MessageHandler, host string) {
 	for {
 		var stat syscall.Statfs_t
-		wd, err := syscall.Getwd()
-		if err != nil {
-			fmt.Println("Error getting current directory:", err)
-			return
-		}
-		syscall.Statfs(wd, &stat)
+		path := "/bigdata/students/amalla2/DATASTORE"
+		syscall.Statfs(path, &stat)
 
 		available_size := stat.Bavail * uint64(stat.Bsize) / 1024 / 1024
 
