@@ -229,10 +229,10 @@ func assignOtherNodes(nodeHandler *messages.MessageHandler, chunkName string, ex
 	}
 
 	chunk := Chunk{
-		ChunkName:      chunkName,
-		PrimaryNode:    new_primary_node,
-		SecondaryNodes: []string{new_primary_node, new_primary_node}, // for testing under single node
-		// SecondaryNodes: new_secondary_nodes, // for prod use
+		ChunkName:   chunkName,
+		PrimaryNode: new_primary_node,
+		// SecondaryNodes: []string{new_primary_node, new_primary_node}, // for testing under single node
+		SecondaryNodes: new_secondary_nodes, // for prod use
 	}
 
 	ok := saveOrUpdateChunkMetaToDB(chunkDB, chunk)
@@ -874,7 +874,14 @@ func getChunkMetaFromDB(key string) (map[string]interface{}, error) {
 			return nil, fmt.Errorf("SecondaryNodes is not a string")
 		}
 		nodes := strings.Split(secondary_nodes, ",")
-		chunk_obj[SECONDARY_NODES] = nodes
+		if len(nodes) == 1 && nodes[0] == "" {
+			chunk_obj[SECONDARY_NODES] = []string{}
+
+		} else {
+			chunk_obj[SECONDARY_NODES] = nodes
+
+		}
+
 	}
 
 	return chunk_obj, nil
