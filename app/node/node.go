@@ -236,9 +236,9 @@ func worker(heartbeartController *messages.MessageHandler, host string) {
 			chunkName := msg.ChunkReplicaRoute.ChunkName
 			secondary_nodes := msg.ChunkReplicaRoute.OtherNodes
 
-			go sendReplicasNow(chunkName, secondary_nodes)
+			sendReplicasNow(chunkName, secondary_nodes)
 		case *messages.Wrapper_DeleteChunk:
-			go handleDeleteChunk(heartbeartController, msg.DeleteChunk.GetChunkName())
+			handleDeleteChunk(heartbeartController, msg.DeleteChunk.GetChunkName())
 		}
 		// reset the retry count if the message was successfully processed
 	}

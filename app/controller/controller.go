@@ -204,19 +204,21 @@ func assignOtherNodes(nodeHandler *messages.MessageHandler, chunkName string, ex
 		if len(existingNodes)+len(new_nodes) == 3 { // #assign_total_nodes to maintain replication factor
 			break
 		}
+		existing := false
 		for _, existingNode := range existingNodes {
 			if new_node == existingNode {
-				continue
+				existing = true
 			}
 		}
-		new_nodes = append(new_nodes, new_node)
+		if !existing {
+			new_nodes = append(new_nodes, new_node)
+		}
 	}
 
 	// fmt.Println("\n", "LOG:", "new nodes. -> ", new_nodes)
 
 	var new_primary_node string
 	var new_secondary_nodes []string
-	_ = new_secondary_nodes
 
 	if len(new_nodes) == 2 { // First time upload case
 		new_primary_node = existingNodes[0]
@@ -504,21 +506,25 @@ func deleteChunk(chunkname string) {
 		wrapper := messages.Wrapper{
 			Msg: &messages.Wrapper_DeleteChunk{DeleteChunk: &payload},
 		}
+		fmt.Printf("Sending Del %s to %s\n", chunkname, node)
 
 		nodeHandler, err := getNodeHandler(node)
 		check(err)
 		nodeHandler.Send(&wrapper)
-
 	}
-
 }
 
 var full_chunk_deletion_notification = make(chan string, 1)
 
+var dbLock sync.Mutex
+
 func handleChunkDeleteAck(msg *messages.DeleteChunkAck) {
+	dbLock.Lock()
+	defer dbLock.Unlock()
 	chunkName := msg.GetChunkName()
 	deleteNode := msg.GetNode()
 	success := msg.GetSuccess()
+
 	if !success {
 		fmt.Print("something went wrong while deleting chunk from node.")
 		return
@@ -528,12 +534,17 @@ func handleChunkDeleteAck(msg *messages.DeleteChunkAck) {
 	check(err)
 
 	currentNodes := utils.GetAllNodesFromChunkMeta(chunkMeta)
+	// fmt.Printf("Current Nodes %s - before - %s , len - %d\n", chunkName, currentNodes, len(currentNodes))
+
 	currentNodes = utils.RemoveElementFromList(currentNodes, deleteNode)
+	// fmt.Printf("Current Nodes %s - after - %s , len - %d\n", chunkName, currentNodes, len(currentNodes))
+
 	if len(currentNodes) == 0 {
 		// Notify full Chunk Delettion
 		full_chunk_deletion_notification <- chunkName // if the chunk is fully deleted, then inform the delete file maintainer about the chunk
 	} else if len(currentNodes) == 1 {
 		chunkMeta[PRIMARY_NODE] = currentNodes[0]
+		chunkMeta[SECONDARY_NODES] = []string{}
 	} else {
 		chunkMeta[PRIMARY_NODE] = currentNodes[0]
 		chunkMeta[SECONDARY_NODES] = currentNodes[1:]
@@ -560,9 +571,13 @@ func listenToDeletedChunks(msgHandler *messages.MessageHandler, file_name string
 		chunk_name := <-full_chunk_deletion_notification
 
 		delete(deleteFileManager[file_name], chunk_name)
+
+		// fmt.Printf("chunks remaining - %d\n", len(deleteFileManager[file_name]))
+
 		if len(deleteFileManager[file_name]) == 0 {
 			payload := messages.DeleteResponse{
 				FileName: file_name,
+				Success:  true,
 			}
 			wrapper := messages.Wrapper{
 				Msg: &messages.Wrapper_DeleteResponse{DeleteResponse: &payload},
