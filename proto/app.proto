@@ -82,6 +82,7 @@ message Heartbeat{
     bool beat = 2;
     string message = 3;
     uint64 disk_space = 4;
+    uint64 requests = 5;
 }
 
 message Register{

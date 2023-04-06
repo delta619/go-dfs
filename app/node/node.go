@@ -18,6 +18,7 @@ import (
 var DATASTORE = "/bigdata/students/amalla2/DATASTORE/"
 var NUM_OF_WORKERS = 1
 var heartbeartController *messages.MessageHandler
+var REQUESTS = uint64(0)
 
 func check(err error) {
 	if err != nil {
@@ -112,6 +113,7 @@ func handleChunkDownloadRequest() {
 func handleDataServices(msgHandler *messages.MessageHandler) {
 	for {
 		wrapper, err := msgHandler.Receive()
+		REQUESTS++
 		if err != nil {
 			// log the error and wait for a while before retrying
 			fmt.Printf("Error receiving message: %v\n", err)
@@ -145,6 +147,8 @@ func handleDataServices(msgHandler *messages.MessageHandler) {
 			chunkData := msg.PutChunkReplica.GetChunkData()
 
 			handlePutChunkReplica(chunkName, chunkData)
+		default:
+			return
 		}
 
 	}
@@ -230,6 +234,7 @@ func worker(heartbeartController *messages.MessageHandler, host string) {
 	for {
 		// fmt.Println("Waiting for message from Controller")
 		wrapper, err := heartbeartController.Receive()
+		REQUESTS++
 		if err != nil {
 			// log the error and wait for a while before retrying
 			fmt.Printf("Error receiving message: %v", err)
@@ -260,6 +265,9 @@ func worker(heartbeartController *messages.MessageHandler, host string) {
 			sendReplicasNow(chunkName, otherNodes)
 		case *messages.Wrapper_DeleteChunk:
 			handleDeleteChunk(heartbeartController, msg.DeleteChunk.GetChunkName())
+		default:
+			return
+
 		}
 		// reset the retry count if the message was successfully processed
 	}
@@ -275,7 +283,7 @@ func updateMyHeartbeatAuto(heartbeartController *messages.MessageHandler, host s
 		available_size := stat.Bavail * uint64(stat.Bsize) / 1024 / 1024
 
 		// create heartbeat payload and send it after every 5sec
-		heartbeat := messages.Heartbeat{Host: host, Beat: true, DiskSpace: available_size}
+		heartbeat := messages.Heartbeat{Host: host, Beat: true, DiskSpace: available_size, Requests: REQUESTS}
 		wrapper := &messages.Wrapper{
 			Msg: &messages.Wrapper_Heartbeat{Heartbeat: &heartbeat},
 		}

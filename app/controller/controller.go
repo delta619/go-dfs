@@ -42,6 +42,9 @@ var (
 	mutex           = &sync.Mutex{}
 )
 
+var diskSpaceManager = make(map[string]uint64)
+var nodeRequestsManager = make(map[string]uint64)
+
 var automatic_deregestration_time = 7
 
 var node_down_notification_channel = make(chan string, 1)
@@ -352,13 +355,15 @@ func addChunkToNode(db *bitcask.Bitcask, node string, chunkName string) error {
 
 func handle_CHUNK_ROUTE_requests(msgHandler *messages.MessageHandler, msg *messages.ChunkRouteRequest) {
 	// get active node
-	assigned_node, err := get_route_node_for_chunk()
-	// get port from active_host[0]
-
 	success := true
-	if err != 0 {
+
+	assigned_node, err := get_route_node_for_chunk()
+	if err != nil {
+		fmt.Printf("Error allocation chunk : %s", err)
+
 		success = false
 	}
+
 	// fmt.Println("\n", "LOG:", "ChunkRouteResponse res.", assigned_node, err, success)
 
 	route_response_payload := messages.ChunkRouteResponse{
@@ -442,15 +447,26 @@ func createDir(storagePath string) error {
 	return nil
 }
 
-func get_route_node_for_chunk() (string, int) {
+func get_route_node_for_chunk() (string, error) {
+	efficiencyConstant := float64(0)
+	mostEfficientNode := ""
 
 	for node, value := range registrationMap {
-
-		if value == 1 {
-			return node, 0
+		if value == 1 { // node is active
+			space := getDiskSpace(node)
+			requests := getNodeRequests(node)
+			efficiency := float64(space) / (float64(requests) + 1)
+			if efficiency > efficiencyConstant || mostEfficientNode == "" {
+				efficiencyConstant = efficiency
+				mostEfficientNode = node
+			}
 		}
 	}
-	return "No active nodes", 1
+	if mostEfficientNode != "" {
+		updateNodeRequests(mostEfficientNode, getNodeRequests(mostEfficientNode)+1)
+		return mostEfficientNode, nil
+	}
+	return "", fmt.Errorf("No active nodes.\n")
 }
 
 //////////////////////// LISTING ///////////////////////////////
@@ -543,7 +559,10 @@ func deleteChunk(msgHandler *messages.MessageHandler, chunkname string, file_nam
 		// fmt.Printf("Sending Del %s to %s\n", chunkname, node)
 
 		nodeHandler, err := getNodeHandler(node)
-		check(err)
+		if err != nil {
+			fmt.Printf("Cant delete, %s inactive.\n", node)
+			continue
+		}
 		nodeHandler.Send(&wrapper)
 	}
 }
@@ -633,7 +652,7 @@ func handleStoreRequest(msgHandler *messages.MessageHandler, msg *messages.Store
 
 	present := metadb.Has([]byte(msg.FileName))
 	if present {
-		success = false
+		success = true
 		message = "File Already Present on DFS\n"
 	}
 	payload := messages.StoreResponse{Success: success, Message: message, FileName: msg.FileName}
@@ -683,8 +702,15 @@ func handleChunkProxyPush(msg *messages.ChunkProxyPush) {
 
 //////////////////////// UTILS /////////////////////////////////
 
-func validateHeartbeat(msgHandler *messages.MessageHandler, host string, beat bool, disk_space uint64) {
+func validateHeartbeat(msgHandler *messages.MessageHandler, msg *messages.Heartbeat) {
 	// if we send an isIssuccess-false then client seends to send a Registration request
+	//  host string, beat bool, disk_space uint64
+
+	host := msg.GetHost()
+	beat := msg.GetBeat()
+	disk_space := msg.GetDiskSpace()
+	num_of_requests := msg.GetRequests()
+
 	isRegistered := registrationMap[host]
 	isSuccess := true
 	message := "#"
@@ -715,9 +741,11 @@ func validateHeartbeat(msgHandler *messages.MessageHandler, host string, beat bo
 	someMapMutex.Unlock()
 
 	if isSuccess {
-		// fmt.Printf("Disk space of %s is %d MB\n", host, disk_space) // TODO
+		fmt.Printf("Info %s / %d MB / %d /\n", host, disk_space, num_of_requests) // TODO
 		// fmt.Println("Heartbeart updated successfully. " + host)
 		updateTimeStamp(host)
+		updateDiskSpace(host, disk_space)
+		updateNodeRequests(host, num_of_requests)
 	}
 
 	// use message temporary
@@ -753,6 +781,30 @@ func updateTimeStamp(host string) {
 	// fmt.Println("Ping received from host - " + host + " - Updated timestamp")
 
 	someMapMutex.Unlock()
+}
+
+func updateDiskSpace(host string, storageInMB uint64) {
+	someMapMutex.Lock()
+	diskSpaceManager[host] = storageInMB
+	someMapMutex.Unlock()
+}
+func updateNodeRequests(host string, requests uint64) {
+	someMapMutex.Lock()
+	nodeRequestsManager[host] = requests
+	someMapMutex.Unlock()
+}
+func getNodeRequests(host string) uint64 {
+	someMapMutex.Lock()
+	defer someMapMutex.Unlock()
+
+	return nodeRequestsManager[host]
+}
+
+func getDiskSpace(host string) uint64 {
+	someMapMutex.Lock()
+	defer someMapMutex.Unlock()
+
+	return diskSpaceManager[host]
 }
 
 var nodeHandlers = make(map[string]*messages.MessageHandler)
@@ -918,7 +970,7 @@ func handleNodes(msgHandler *messages.MessageHandler) {
 		case *messages.Wrapper_ChunkSaved: /*node*/
 			go handleChunkSaved(msgHandler, msg.ChunkSaved)
 		case *messages.Wrapper_Heartbeat: /*node*/
-			validateHeartbeat(msgHandler, msg.Heartbeat.GetHost(), msg.Heartbeat.GetBeat(), msg.Heartbeat.GetDiskSpace())
+			validateHeartbeat(msgHandler, msg.Heartbeat)
 		case *messages.Wrapper_Register: /*node*/
 			register(msg.Register.GetHost(), msgHandler)
 		case *messages.Wrapper_DeleteChunkAck:
