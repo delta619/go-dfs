@@ -561,12 +561,15 @@ func listFilesOnServer() {
 var ls_command_completed_notification_channel = make(chan bool, 1)
 
 func handleListResponse(filenames []string, statusList []int64) {
+	if len(filenames) == 0 {
+		fmt.Printf("\n No files found.\n")
+	}
 	for i, file_name := range filenames {
 		status := ""
 		if statusList[i] <= 0 {
 			status = "(Not available for some time)"
 		}
-		fmt.Printf("%d - %s %s\n", i+1, file_name, status)
+		fmt.Printf("\n📂 %d - %s %s\n", i+1, file_name, status)
 		time.Sleep(100 * time.Millisecond)
 	}
 	ls_command_completed_notification_channel <- true
@@ -602,7 +605,7 @@ func main() {
 	go handleController()
 
 	for {
-		fmt.Print("\n---------------------|\n1 -> GET\n2 -> PUT\n3 -> ls\n4 -> Delete\n5 -> ChunkSize\n")
+		fmt.Printf("\nSELECT OPTION\n---------------------|\n1 -> GET\n2 -> PUT\n3 -> ls\n4 -> Delete\n5 -> ChunkSize (%d MB)\n", CHUNK_IN_MB)
 		var action int
 		_, err := fmt.Scanln(&action)
 		if err != nil {
@@ -617,9 +620,13 @@ func main() {
 			_, err := fmt.Scanln(&FileName)
 			check(err)
 			getAction(FileName)
-			<-get_action_completed_notification
+			result := <-get_action_completed_notification
+			if !result {
+				fmt.Printf("File not found\n")
+			} else {
+				fmt.Printf("Done!\n")
+			}
 			clean()
-			fmt.Printf("Completed GET.")
 			continue
 		case 2: //PUT
 			// transfer file code here
@@ -630,7 +637,6 @@ func main() {
 			putAction(FileName)
 			<-put_action_completed_notification
 			clean()
-			fmt.Printf("Completed PUT\n")
 			continue
 		case 3:
 			// exit code here
@@ -638,13 +644,13 @@ func main() {
 			<-ls_command_completed_notification_channel
 			continue
 		case 4:
-			fmt.Printf("Enter file name to delete.")
+			fmt.Printf("Enter file name to delete ")
 			var FileName string
 			_, err := fmt.Scanln(&FileName)
 			check(err)
 			go handleDelete(FileName)
 			success := <-file_delete_complete_notification_channel
-			fmt.Printf("%s delete %ssuccessful\n", FileName, func() string {
+			fmt.Printf("\n%s delete %ssuccessful\n", FileName, func() string {
 				if success {
 					return ""
 				} else {
@@ -697,16 +703,20 @@ func handleController() {
 
 		switch msg := wrapper.Msg.(type) {
 		case *messages.Wrapper_RetrieveResponse:
-			fmt.Println("\n", "LOG:", "Retreival response. chunks count", len(msg.RetrieveResponse.ChunkNames))
-			go retrieveAllChunks(msg.RetrieveResponse.GetChunks())
+			// fmt.Println("\n", "LOG:", "Retreival response. chunks count", len(msg.RetrieveResponse.ChunkNames))
+			if !msg.RetrieveResponse.Success {
+				get_action_completed_notification <- false
+			} else {
+				go retrieveAllChunks(msg.RetrieveResponse.GetChunks())
+			}
 			continue
 		case *messages.Wrapper_StoreResponse:
 			if msg.StoreResponse.GetSuccess() == true {
 				fmt.Println("\nAllowed to upload file")
 				go createRoutedChunksForUpload(msg.StoreResponse.FileName)
 			} else {
-				fmt.Println("File already present on server")
-
+				fmt.Println(msg.StoreResponse.Message)
+				put_action_completed_notification <- true
 			}
 			continue
 		case *messages.Wrapper_ChunkRouteResponse:
@@ -738,7 +748,7 @@ func handleController() {
 		case *messages.Wrapper_DeleteResponse:
 			go handleDeleteResponse(msg.DeleteResponse.GetFileName(), msg.DeleteResponse.GetSuccess())
 		default:
-			fmt.Println("Unexpected message received")
+			fmt.Println("Controller Disconnected")
 			return
 
 		}

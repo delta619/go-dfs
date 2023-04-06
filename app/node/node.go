@@ -2,6 +2,7 @@ package main
 
 import (
 	"app/messages"
+	"crypto/md5"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -79,6 +80,25 @@ func handleChunkDownloadRequest() {
 		chunk_data, err := ioutil.ReadFile(DATASTORE + chunkMeta.chunkName)
 		check(err)
 
+		//check md5
+		chunkMD5 := fmt.Sprintf("%x", md5.Sum(chunk_data))
+
+		if chunkMD5 != chunkMeta.chunkName {
+			// send back a dummy file
+			// meanwhile tell controller to make seconday node send me the fresh replacement
+			payload := messages.ChunkProxyPush{
+				ChunkName: chunkMeta.chunkName,
+				DestNode:  os.Args[1] + ":" + os.Args[2],
+			}
+
+			wrapper := &messages.Wrapper{
+				Msg: &messages.Wrapper_ChunkProxyPush{
+					ChunkProxyPush: &payload,
+				},
+			}
+			heartbeartController.Send(wrapper)
+		}
+
 		response_chunk_payload := messages.ChunkResponse{ChunkName: chunkMeta.chunkName, ChunkData: chunk_data}
 		wrapper := &messages.Wrapper{
 			Msg: &messages.Wrapper_ChunkResponse{ChunkResponse: &response_chunk_payload},
@@ -143,9 +163,7 @@ func sendReplicasNow(chunkName string, other_nodes []string) {
 	hostname := os.Args[1]
 	port := os.Args[2]
 
-	fmt.Printf("I - %s:%s, Sending chunk to %s  \n", hostname, port, strings.Join(other_nodes, ","))
-
-	/////////   1st replica/////////////
+	fmt.Printf("%s, replicated to %s  \n", chunkName, strings.Join(other_nodes, ","))
 
 	for _, other_node := range other_nodes {
 		inter_node_connection, err := net.Dial("tcp", other_node)
@@ -153,6 +171,13 @@ func sendReplicasNow(chunkName string, other_nodes []string) {
 		inter_node_connection_handler := messages.NewMessageHandler(inter_node_connection)
 
 		chunk_data, err := ioutil.ReadFile(DATASTORE + chunkName)
+		chunkMD5 := fmt.Sprintf("%x", md5.Sum(chunk_data))
+
+		if chunkMD5 != chunkName {
+			fmt.Printf("MD5 failed for replica rectification %s on node %s", chunkName, hostname)
+			return
+		}
+
 		putChunkReplicaPayload := messages.PutChunkReplica{ChunkName: chunkName, ChunkData: chunk_data}
 
 		wrapper := &messages.Wrapper{
@@ -164,10 +189,6 @@ func sendReplicasNow(chunkName string, other_nodes []string) {
 
 	}
 
-	/////////   2nd replica/////////////
-
-	// defer inter_node_connection_handler.Close()
-	// defer inter_node_connection.Close()
 }
 
 ///////////////// DELETE ///////////////////
@@ -175,7 +196,7 @@ func sendReplicasNow(chunkName string, other_nodes []string) {
 func handleDeleteChunk(msgHandler *messages.MessageHandler, chunkName string) {
 	success := true
 	err := os.Remove(DATASTORE + chunkName)
-	fmt.Printf("Log: deleted %s %s\n", os.Args[1]+":"+os.Args[2], chunkName)
+	// fmt.Printf("Log: deleted %s %s\n", os.Args[1]+":"+os.Args[2], chunkName)
 	if err != nil {
 		if os.IsNotExist(err) {
 			fmt.Printf("Warning: trying to delete a chunk which doesnt exists\n")
@@ -183,7 +204,7 @@ func handleDeleteChunk(msgHandler *messages.MessageHandler, chunkName string) {
 			success = false
 		}
 	}
-	fmt.Println("Chunk deleted successfully")
+	// fmt.Println("Chunk deleted successfully")
 
 	payload := messages.DeleteChunkAck{
 		ChunkName: chunkName,
@@ -234,9 +255,9 @@ func worker(heartbeartController *messages.MessageHandler, host string) {
 			// fmt.Println("File req received from Controller.")
 		case *messages.Wrapper_ChunkReplicaRoute:
 			chunkName := msg.ChunkReplicaRoute.ChunkName
-			secondary_nodes := msg.ChunkReplicaRoute.OtherNodes
+			otherNodes := msg.ChunkReplicaRoute.OtherNodes
 
-			sendReplicasNow(chunkName, secondary_nodes)
+			sendReplicasNow(chunkName, otherNodes)
 		case *messages.Wrapper_DeleteChunk:
 			handleDeleteChunk(heartbeartController, msg.DeleteChunk.GetChunkName())
 		}

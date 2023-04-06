@@ -114,6 +114,17 @@ func handleRetrieveRequest(msgHandler *messages.MessageHandler, msg *messages.Re
 	fmt.Println("\n", "LOG:", "Retreival request of .", file_name)
 
 	chunks_list_names, err := getArrayValue(metadb, file_name)
+	if err != nil {
+		payload := messages.RetrieveResponse{
+			Success: false,
+			Message: "File not found",
+		}
+		wrapper := &messages.Wrapper{
+			Msg: &messages.Wrapper_RetrieveResponse{RetrieveResponse: &payload},
+		}
+		msgHandler.Send(wrapper)
+		return
+	}
 	// fmt.Printf("Chunks count of %s -> %d \n", file_name, len(chunks_list_names))
 
 	chunk_nodes := make([]string, 0)
@@ -153,6 +164,7 @@ func handleRetrieveRequest(msgHandler *messages.MessageHandler, msg *messages.Re
 		ChunkNodes: chunk_nodes,
 		FileName:   file_name,
 		Chunks:     chunkPtrs,
+		Success:    true,
 	}
 	wrapper := &messages.Wrapper{
 		Msg: &messages.Wrapper_RetrieveResponse{RetrieveResponse: &payload},
@@ -528,7 +540,7 @@ func deleteChunk(msgHandler *messages.MessageHandler, chunkname string, file_nam
 		wrapper := messages.Wrapper{
 			Msg: &messages.Wrapper_DeleteChunk{DeleteChunk: &payload},
 		}
-		fmt.Printf("Sending Del %s to %s\n", chunkname, node)
+		// fmt.Printf("Sending Del %s to %s\n", chunkname, node)
 
 		nodeHandler, err := getNodeHandler(node)
 		check(err)
@@ -611,6 +623,62 @@ func listenToDeletedChunks(msgHandler *messages.MessageHandler, file_name string
 			return
 		}
 	}
+}
+
+//////////////////////// STORE REQUEST ////////////////////////////
+
+func handleStoreRequest(msgHandler *messages.MessageHandler, msg *messages.StoreRequest) {
+	success := true
+	message := "You you can store the file\n"
+
+	present := metadb.Has([]byte(msg.FileName))
+	if present {
+		success = false
+		message = "File Already Present on DFS\n"
+	}
+	payload := messages.StoreResponse{Success: success, Message: message, FileName: msg.FileName}
+	wrapper := &messages.Wrapper{
+		Msg: &messages.Wrapper_StoreResponse{StoreResponse: &payload},
+	}
+	msgHandler.Send(wrapper)
+
+}
+
+//////////////////////// RECTIFYING ///////////////////////////////
+
+func handleChunkProxyPush(msg *messages.ChunkProxyPush) {
+	chunkName := msg.GetChunkName()
+	destinationNode := msg.GetDestNode()
+
+	ChunkMeta, err := getChunkMetaFromDB(chunkName)
+	if err != nil {
+		fmt.Printf("Error: Cant find chunk %s in the db as requested by some node", chunkName)
+	}
+
+	locationNodes := make([]string, 0)
+
+	locationNodes = append(locationNodes, ChunkMeta[PRIMARY_NODE].(string))
+	locationNodes = append(locationNodes, ChunkMeta[SECONDARY_NODES].([]string)...)
+
+	for _, sourceNode := range locationNodes {
+		if sourceNode != destinationNode {
+			payload := messages.ChunkReplicaRoute{
+				ChunkName:  chunkName,
+				OtherNodes: []string{destinationNode},
+			}
+			wrapper := messages.Wrapper{
+				Msg: &messages.Wrapper_ChunkReplicaRoute{
+					ChunkReplicaRoute: &payload,
+				},
+			}
+			nodeHandler, err := getNodeHandler(sourceNode)
+			if err != nil {
+				fmt.Printf("Error: cant send Checked replica to destination node as its handler is not defined\n")
+			}
+			nodeHandler.Send(&wrapper)
+		}
+	}
+
 }
 
 //////////////////////// UTILS /////////////////////////////////
@@ -820,11 +888,7 @@ func handleClient(msgHandler *messages.MessageHandler) {
 		case *messages.Wrapper_ChunkRouteRequest: /*client*/
 			handle_CHUNK_ROUTE_requests(msgHandler, msg.ChunkRouteRequest)
 		case *messages.Wrapper_StoreRequest: /*client*/
-			payload := messages.StoreResponse{Success: true, Message: "You you can store the file", FileName: msg.StoreRequest.FileName}
-			wrapper := &messages.Wrapper{
-				Msg: &messages.Wrapper_StoreResponse{StoreResponse: &payload},
-			}
-			msgHandler.Send(wrapper)
+			handleStoreRequest(msgHandler, msg.StoreRequest)
 		case *messages.Wrapper_ListRequest:
 			handleListRequest(msgHandler)
 		case *messages.Wrapper_DeleteRequest:
@@ -859,6 +923,8 @@ func handleNodes(msgHandler *messages.MessageHandler) {
 			register(msg.Register.GetHost(), msgHandler)
 		case *messages.Wrapper_DeleteChunkAck:
 			handleChunkDeleteAck(msg.DeleteChunkAck)
+		case *messages.Wrapper_ChunkProxyPush:
+			handleChunkProxyPush(msg.ChunkProxyPush)
 
 		default:
 			fmt.Println("Some node closed")

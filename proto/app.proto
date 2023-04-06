@@ -125,6 +125,8 @@ message RetrieveResponse {
     repeated string chunk_nodes = 2;
     string fileName = 3;
     repeated Chunk chunks = 4;
+    bool success = 5;
+    string message = 6;
 
 }
 
@@ -165,6 +167,11 @@ message FilePush {
     bytes file_data = 3;
     int32 file_size = 4;
     bytes checksum = 5;
+}
+
+message ChunkProxyPush{
+    string destNode = 2;
+    string chunkName = 3;
 }
 
 message Request{
@@ -218,6 +225,8 @@ message Wrapper {
 
         DeleteChunk delete_chunk = 26;
         DeleteChunkAck delete_chunk_ack = 27;
+
+        ChunkProxyPush chunk_proxy_push = 28;
     }
 }
 
