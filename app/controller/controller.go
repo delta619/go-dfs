@@ -476,21 +476,43 @@ var deleteFileManager = make(map[string]map[string]bool) // map of map of bool
 
 func handleFileDelete(msgHandler *messages.MessageHandler, file_name string) {
 
-	go listenToDeletedChunks(msgHandler, file_name)
 	chunksList, err := getArrayValue(metadb, file_name)
-	check(err)
+	if err != nil {
+		payload := messages.DeleteResponse{
+			FileName: file_name,
+			Success:  false,
+		}
+		wrapper := messages.Wrapper{
+			Msg: &messages.Wrapper_DeleteResponse{DeleteResponse: &payload},
+		}
+		msgHandler.Send(&wrapper)
+		return
+
+	}
+	go listenToDeletedChunks(msgHandler, file_name)
+
 	deleteFileManager[file_name] = make(map[string]bool, 0)
 	for _, chunkName := range chunksList {
 		deleteFileManager[file_name][chunkName] = true
-		deleteChunk(chunkName)
+		deleteChunk(msgHandler, chunkName, file_name)
 	}
 
 }
 
-func deleteChunk(chunkname string) {
+func deleteChunk(msgHandler *messages.MessageHandler, chunkname string, file_name string) {
 
 	chunkMeta, err := getChunkMetaFromDB(chunkname)
-	check(err)
+	if err != nil {
+		payload := messages.DeleteResponse{
+			FileName: file_name,
+			Success:  false,
+		}
+		wrapper := messages.Wrapper{
+			Msg: &messages.Wrapper_DeleteResponse{DeleteResponse: &payload},
+		}
+		msgHandler.Send(&wrapper)
+		return
+	}
 
 	storageNodes := make([]string, 0)
 	storageNodes = append(storageNodes, chunkMeta[PRIMARY_NODE].(string))
@@ -854,6 +876,10 @@ func test() {
 
 func getArrayValue(b *bitcask.Bitcask, key string) ([]string, error) {
 	val, err := metadb.Get([]byte(key))
+	if err != nil {
+		return nil, err
+	}
+
 	res, err := strings.Split(string(val), ","), nil
 
 	if err != nil {
@@ -876,7 +902,9 @@ func getChunkMetaFromDB(key string) (map[string]interface{}, error) {
 	// Get the value from the database based on the key
 
 	bytes, err := chunkDB.Get([]byte(key))
-	check(err)
+	if err != nil {
+		return nil, fmt.Errorf("Key not present")
+	}
 	// Decode the JSON object from bytes
 	var chunk_obj map[string]interface{}
 	err = json.Unmarshal(bytes, &chunk_obj)
