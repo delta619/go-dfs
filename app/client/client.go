@@ -31,7 +31,7 @@ var GO_push_to_node = 1
 var CHUNK_IN_MB = 7
 
 var UPLOADED_FILES = 0
-var DOWNLOADED_FILES = 0
+var DOWNLOADED_CHUNKS = 0
 var TOTAL_CHUNKS = int64(0)
 
 var CHUNK_SIZE = int64(CHUNK_IN_MB * 1024 * 1024) // Depends on CHUNK_IN_MB
@@ -39,7 +39,7 @@ var CHUNK_SIZE = int64(CHUNK_IN_MB * 1024 * 1024) // Depends on CHUNK_IN_MB
 func clean() {
 	// Reset global variables
 	UPLOADED_FILES = 0
-	DOWNLOADED_FILES = 0
+	DOWNLOADED_CHUNKS = 0
 	TOTAL_CHUNKS = 0
 
 	// Clear node handlers map
@@ -98,59 +98,6 @@ func createNodeHandler(node string) (*messages.MessageHandler, bool, error) {
 	setNodeHandler(addr, nodeHandler)
 
 	return nodeHandler, false, nil
-}
-
-func getChunkFromNode() {
-	for {
-		chunk := <-chunk_retreive_channel
-		// fmt.Println("\n", "LOG:", "Asking node for the chunk", chunk.ChunkName)
-
-		selectedNode := chunk.PrimaryNode
-
-		if chunk.UseSecondary > 0 {
-			selectedNode = chunk.SecondaryNodes[chunk.UseSecondary-1]
-		}
-
-		nodeHandler, isExisting, err := createNodeHandler(selectedNode)
-		if err != nil {
-			fmt.Println("\n", "LOG:", "Node down !, Cant Get Chunk", chunk.ChunkName, chunk.PrimaryNode)
-
-			if chunk.UseSecondary == 0 {
-
-				chunk.UseSecondary = 1
-				fmt.Println("\n", "LOG:", "Node down !, Trying Secondary node-", chunk.UseSecondary, chunk.ChunkName, chunk.PrimaryNode)
-
-				chunk_retreive_channel <- chunk
-
-			} else if chunk.UseSecondary != len(chunk.SecondaryNodes) {
-				chunk.UseSecondary += 1
-				fmt.Println("\n", "LOG:", "Node down !, Trying Secondary node-", chunk.UseSecondary, chunk.ChunkName, chunk.PrimaryNode)
-				chunk_retreive_channel <- chunk
-
-			} else {
-				fmt.Println("\n", "LOG:", "Chunk irretrievable, FAILED", chunk.ChunkName, chunk.PrimaryNode)
-				// Show some Error and come out
-			}
-			continue
-
-		}
-
-		check(err)
-
-		payload := messages.ChunkRequest{
-			ChunkName: chunk.ChunkName,
-		}
-
-		wrapper := messages.Wrapper{
-			Msg: &messages.Wrapper_ChunkRequest{ChunkRequest: &payload},
-		}
-		nodeHandler.Send(&wrapper)
-
-		if !isExisting {
-			// fmt.Println("\n", "LOG:", "Go wait", chunk.PrimaryNode)
-			go waitForChunkFromNode(nodeHandler)
-		}
-	}
 }
 
 func getSize(FileName string) int64 {
@@ -376,6 +323,8 @@ func getAction(file_name string) {
 
 }
 
+var retrieveChunkManager = make(map[string]Chunk_for_channel)
+
 func retrieveAllChunks(chunks []*messages.Chunk) {
 	// Get the file name and initialize arrays to store chunk names and primary nodes
 	file_name := chunks[0].GetFileName()
@@ -414,9 +363,8 @@ func retrieveAllChunks(chunks []*messages.Chunk) {
 			UseSecondary:   0,
 		}
 
-		// fmt.Println("\n", "LOG:", "Inserted in request ", i)
-		// fmt.Println("\n", "Blocked at:", "chunk_retreive_channel.")
-		chunk_retreive_channel <- chunk
+		retrieveChunkManager[chunk_names[i]] = chunk // store metadata of each chunk
+		chunk_retreive_channel <- chunk              // push each chunk request in the channel
 	}
 
 }
@@ -431,6 +379,65 @@ func waitForAllChunks(file_name string, ChunkNames []string) {
 		// fmt.Println("\n", "Blocked at:", "get_action_completed_notification.")
 		get_action_completed_notification <- true
 
+	}
+}
+
+func getChunkFromNode() {
+	for {
+		chunk := <-chunk_retreive_channel
+		// fmt.Println("\n", "LOG:", "Asking node for the chunk", chunk.ChunkName)
+
+		selectedNode := chunk.PrimaryNode
+
+		if chunk.UseSecondary > 0 {
+			selectedNode = chunk.SecondaryNodes[chunk.UseSecondary-1]
+		}
+		fmt.Printf("LOG: Asking %s from %s \n", chunk.ChunkName, selectedNode)
+
+		nodeHandler, isExisting, err := createNodeHandler(selectedNode)
+		if err != nil {
+			fmt.Println("\n", "LOG:", "Node down !, Cant Get Chunk", chunk.ChunkName, chunk.PrimaryNode)
+
+			if chunk.UseSecondary == 0 {
+
+				chunk.UseSecondary = 1
+				fmt.Println("\n", "LOG:", "Node down !, Trying Secondary node-", chunk.UseSecondary, chunk.ChunkName, chunk.PrimaryNode)
+
+				chunk_retreive_channel <- chunk
+				continue
+
+			} else if chunk.UseSecondary != len(chunk.SecondaryNodes) {
+				chunk.UseSecondary += 1
+				fmt.Println("\n", "LOG:", "Node down !, Trying Secondary node-", chunk.UseSecondary, chunk.ChunkName, chunk.PrimaryNode)
+
+				chunk_retreive_channel <- chunk
+				continue
+
+			} else {
+				fmt.Println("\n", "LOG:", "Chunk irretrievable, FAILED", chunk.ChunkName, chunk.PrimaryNode, chunk.SecondaryNodes, chunk.UseSecondary)
+				// Show some Error and come out
+				os.Exit(0)
+			}
+			continue
+
+		}
+
+		check(err)
+
+		payload := messages.ChunkRequest{
+			ChunkName: chunk.ChunkName,
+		}
+
+		wrapper := messages.Wrapper{
+			Msg: &messages.Wrapper_ChunkRequest{ChunkRequest: &payload},
+		}
+
+		nodeHandler.Send(&wrapper)
+
+		if !isExisting {
+			// fmt.Println("\n", "LOG:", "Go wait", chunk.PrimaryNode)
+			go waitForChunkFromNode(nodeHandler)
+		}
 	}
 }
 
@@ -514,15 +521,26 @@ func startChunkWriter() {
 			panic(err)
 		}
 
+		chunkMD5 := fmt.Sprintf("%x", md5.Sum(chunkData))
+
+		if chunkMD5 != chunkMeta.ChunkName {
+			fmt.Printf("WARNING: %s MD5 verify failed, trying other nodes\n", chunkMeta.ChunkName)
+			chunk := retrieveChunkManager[chunkMeta.ChunkName]
+			chunk.UseSecondary++
+			chunk_retreive_channel <- chunk
+
+			continue // reinserted into retreival channel with a next node use
+		}
+
 		// chunk := Chunk_for_channel{
 		// 	ChunkName:  chunkMeta.ChunkName,
 		// 	ChunkData: chunkData,
 		// }
 
 		// `some_chunk_got_saved_channel` <- chunk
-		DOWNLOADED_FILES += 1
-		fmt.Printf("⬇ : %d/%d %s \n", DOWNLOADED_FILES, TOTAL_CHUNKS, chunkMeta.ChunkName)
-		if DOWNLOADED_FILES >= int(TOTAL_CHUNKS) {
+		DOWNLOADED_CHUNKS += 1
+		fmt.Printf("⬇ : %d/%d %s \n", DOWNLOADED_CHUNKS, TOTAL_CHUNKS, chunkMeta.ChunkName)
+		if DOWNLOADED_CHUNKS >= int(TOTAL_CHUNKS) {
 			all_chunks_downloaded_notification_channel <- true
 		}
 	}
