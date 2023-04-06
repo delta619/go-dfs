@@ -1,5 +1,5 @@
 servers=(
-    #"orion01"
+    # "orion01"
     "orion02"
     "orion03"
     "orion04"
@@ -10,7 +10,7 @@ servers=(
     "orion09"    
     "orion10"
     "orion11"
-  #  "orion12"
+    "orion12"
 )
 
 for server in ${servers[@]}; do

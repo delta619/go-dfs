@@ -346,7 +346,7 @@ func main() {
 	port := os.Args[2] // my port
 	hostname := host + `:` + port
 
-	localAddr, err := net.ResolveTCPAddr("tcp", host+":"+"21619") // Ping/Heartbeart port our machine. Different from file service port
+	localAddr, err := net.ResolveTCPAddr("tcp", host+":"+"21620") // Ping/Heartbeart port our machine. Different from file service port
 	if err != nil {
 		fmt.Println("Error resolving local address:", err.Error())
 		return

@@ -206,28 +206,27 @@ func handleChunkSaved(nodeHandler *messages.MessageHandler, msg *messages.ChunkS
 }
 
 func assignOtherNodes(nodeHandler *messages.MessageHandler, chunkName string, existingNodes []string) {
-	active_nodes, _ := getActiveNodes()
-
-	// if len(active_nodes) < 2 {
-	// 	// fmt.Println("\n", "LOG:", "No active nodes for replication")
-	// 	return
-	// }
 
 	new_nodes := make([]string, 0)
-
-	for _, new_node := range active_nodes {
-		if len(existingNodes)+len(new_nodes) == 3 { // #assign_total_nodes to maintain replication factor
+	for {
+		if len(existingNodes)+len(new_nodes) == 3 {
 			break
 		}
-		existing := false
+		new_node, err := getRouteChunk()
+		if err != nil {
+			fmt.Printf("Cant get a node for replication, check if the nodes are active")
+		}
+
+		isExisting := false
 		for _, existingNode := range existingNodes {
-			if new_node == existingNode {
-				existing = true
+			if existingNode == new_node {
+				isExisting = true
 			}
 		}
-		if !existing {
+		if !isExisting {
 			new_nodes = append(new_nodes, new_node)
 		}
+
 	}
 
 	// fmt.Println("\n", "LOG:", "new nodes. -> ", new_nodes)
@@ -357,7 +356,7 @@ func handle_CHUNK_ROUTE_requests(msgHandler *messages.MessageHandler, msg *messa
 	// get active node
 	success := true
 
-	assigned_node, err := get_route_node_for_chunk()
+	assigned_node, err := getRouteChunk()
 	if err != nil {
 		fmt.Printf("Error allocation chunk : %s", err)
 
@@ -447,7 +446,7 @@ func createDir(storagePath string) error {
 	return nil
 }
 
-func get_route_node_for_chunk() (string, error) {
+func getRouteChunk() (string, error) {
 	efficiencyConstant := float64(0)
 	mostEfficientNode := ""
 
@@ -652,7 +651,7 @@ func handleStoreRequest(msgHandler *messages.MessageHandler, msg *messages.Store
 
 	present := metadb.Has([]byte(msg.FileName))
 	if present {
-		success = true
+		success = false
 		message = "File Already Present on DFS\n"
 	}
 	payload := messages.StoreResponse{Success: success, Message: message, FileName: msg.FileName}
@@ -757,22 +756,25 @@ func validateHeartbeat(msgHandler *messages.MessageHandler, msg *messages.Heartb
 	}
 	msgHandler.Send(wrapper)
 }
-func getActiveNodes() ([]string, int) {
-	// someMapMutex.Lock()
-	// defer someMapMutex.Unlock()
-	var activeHosts []string
-	for host, status := range registrationMap {
-		if status == 1 {
-			activeHosts = append(activeHosts, host)
+func getActiveNode(ignoreNode string) (string, error) {
+	efficiencyConstant := float64(0)
+	mostEfficientNode := ""
+
+	for node, value := range registrationMap {
+		if value == 1 { // node is active
+			space := getDiskSpace(node)
+			requests := getNodeRequests(node)
+			efficiency := float64(space) / (float64(requests) + 1)
+			if efficiency > efficiencyConstant || mostEfficientNode == "" {
+				efficiencyConstant = efficiency
+				mostEfficientNode = node
+			}
 		}
 	}
-
-	count := int(0)
-
-	if len(activeHosts) < 0 {
-		count = 0
+	if mostEfficientNode != "" {
+		return mostEfficientNode, nil
 	}
-	return activeHosts, count
+	return "", fmt.Errorf("No active nodes.\n")
 }
 func updateTimeStamp(host string) {
 	someMapMutex.Lock()
