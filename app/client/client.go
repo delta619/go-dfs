@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net"
 	"os"
@@ -397,32 +398,29 @@ func getChunkFromNode() {
 		nodeHandler, isExisting, err := createNodeHandler(selectedNode)
 		if err != nil {
 			fmt.Println("\n", "LOG:", "Node down !, Cant Get Chunk", chunk.ChunkName, chunk.PrimaryNode)
+			go func() {
 
-			if chunk.UseSecondary == 0 {
+				if chunk.UseSecondary == 0 {
 
-				chunk.UseSecondary = 1
-				fmt.Println("\n", "LOG:", "Node down !, Trying Secondary node-", chunk.UseSecondary, chunk.ChunkName, chunk.PrimaryNode)
+					chunk.UseSecondary = 1
+					fmt.Println("\n", "LOG:", "Node down !, Trying Secondary node1-", chunk.UseSecondary, chunk.ChunkName, chunk.SecondaryNodes)
 
-				chunk_retreive_channel <- chunk
-				continue
+					chunk_retreive_channel <- chunk
 
-			} else if chunk.UseSecondary != len(chunk.SecondaryNodes) {
-				chunk.UseSecondary += 1
-				fmt.Println("\n", "LOG:", "Node down !, Trying Secondary node-", chunk.UseSecondary, chunk.ChunkName, chunk.PrimaryNode)
+				} else if chunk.UseSecondary != len(chunk.SecondaryNodes) {
+					chunk.UseSecondary += 1
+					fmt.Println("\n", "LOG:", "Node down !, Trying Secondary node2-", chunk.UseSecondary, chunk.ChunkName, chunk.PrimaryNode)
 
-				chunk_retreive_channel <- chunk
-				continue
+					chunk_retreive_channel <- chunk
 
-			} else {
-				fmt.Println("\n", "LOG:", "Chunk irretrievable, FAILED", chunk.ChunkName, chunk.PrimaryNode, chunk.SecondaryNodes, chunk.UseSecondary)
-				// Show some Error and come out
-				os.Exit(0)
-			}
+				} else {
+					fmt.Println("\n", "LOG:", "Chunk irretrievable, FAILED", chunk.ChunkName, chunk.PrimaryNode, chunk.SecondaryNodes, chunk.UseSecondary)
+					// Show some Error and come out
+					os.Exit(0)
+				}
+			}()
 			continue
-
 		}
-
-		check(err)
 
 		payload := messages.ChunkRequest{
 			ChunkName: chunk.ChunkName,
@@ -435,7 +433,7 @@ func getChunkFromNode() {
 		nodeHandler.Send(&wrapper)
 
 		if !isExisting {
-			// fmt.Println("\n", "LOG:", "Go wait", chunk.PrimaryNode)
+			// fmt.Println("\n", "LOG:", "Go wait", chunk.ChunkName)
 			go waitForChunkFromNode(nodeHandler)
 		}
 	}
@@ -470,12 +468,23 @@ func constructFileWhenReady(file_name string, ChunkNames []string) {
 				panic(err)
 			}
 		}
-		data, err := os.ReadFile(fullOutputPath)
-		file_md5 := fmt.Sprintf("%x", md5.Sum(data))
-
-		os.WriteFile(OUTPUT+file_md5, data, 0644)
-
 		fmt.Printf("✅ %s constructed \n", file_name)
+
+		// calc md5
+		file, err := os.Open(fullOutputPath)
+		if err != nil {
+			fmt.Print(err)
+		}
+		defer file.Close()
+		hash := md5.New()
+		if _, err := io.Copy(hash, file); err != nil {
+			log.Fatal(err)
+		}
+
+		hashBytes := hash.Sum(nil)
+
+		// Print the hash as a hex string
+		fmt.Printf("\nMD5 hash: %x\n", hashBytes)
 
 		file_constructed_notification <- true
 	}
@@ -516,7 +525,13 @@ func startChunkWriter() {
 		chunkData := chunkMeta.ChunkData
 
 		chunkPath := SANDBOX + chunkMeta.ChunkName
-		err := os.WriteFile(chunkPath, chunkData, 0644)
+
+		err := os.MkdirAll(SANDBOX, os.ModePerm)
+		if err != nil {
+			panic(err)
+		}
+
+		err = os.WriteFile(chunkPath, chunkData, 0644)
 		if err != nil {
 			panic(err)
 		}

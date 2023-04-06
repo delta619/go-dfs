@@ -827,7 +827,7 @@ func deregister(hostname string) {
 	registrationMap[hostname] = 0
 	setNodeHandler(hostname, nil)
 	fmt.Println("Host deregistered." + hostname)
-	// node_down_notification_channel <- hostname
+	node_down_notification_channel <- hostname
 	someMapMutex.Unlock()
 }
 
