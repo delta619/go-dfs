@@ -337,7 +337,9 @@ func createDir(storagePath string) error {
 }
 
 func main() {
-	setup()
+	if len(os.Args) > 3 {
+		setup()
+	}
 	host := os.Args[1] // my hostname
 	port := os.Args[2] // my port
 	hostname := host + `:` + port
@@ -394,6 +396,8 @@ func main() {
 }
 
 func setup() {
-	// createDir(DATASTORE)
+	appendDir := os.Args[3]
+	DATASTORE = "/bigdata/students/amalla2/" + appendDir + "/"
+	createDir(DATASTORE)
 
 }

@@ -501,15 +501,16 @@ func waitForChunkFromNode(nodeHandler *messages.MessageHandler) {
 		check(err)
 		switch msg := wrapper.Msg.(type) {
 		case *messages.Wrapper_ChunkResponse:
+			go func() {
 
-			chunk := Chunk_for_channel{
-				ChunkName: msg.ChunkResponse.GetChunkName(),
-				ChunkData: msg.ChunkResponse.GetChunkData(),
-			}
-			// fmt.Println("\n", "LOG:", "Receiving chunk", chunk.ChunkName)
-			chunk_waiting_to_be_saved <- chunk
+				chunk := Chunk_for_channel{
+					ChunkName: msg.ChunkResponse.GetChunkName(),
+					ChunkData: msg.ChunkResponse.GetChunkData(),
+				}
+				// fmt.Println("\n", "LOG:", "Receiving chunk", chunk.ChunkName)
+				chunk_waiting_to_be_saved <- chunk
+			}()
 		}
-
 	}
 }
 
