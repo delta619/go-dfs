@@ -2,11 +2,6 @@ syntax = "proto3";
 option go_package = "./messages";
 
 
-message Action{
-    string action = 1;
-    string context = 2;
-}
-
 // Message used for storing a file chunk
 message UploadChunkRequest {
     string chunk_name = 1;
@@ -91,12 +86,6 @@ message Register{
     string message = 3;
 }
 
-message Response{
-    bool Success = 1;
-    string host = 2;
-    string message = 3;
-}
-
 message StoreRequest {
     string file_name = 1;
     int64 file_size = 2;
@@ -120,6 +109,7 @@ message Chunk{
     repeated string secondaryNodes = 3;
     string fileName = 4;
 }
+
 // Message used for providing an existing file
 message RetrieveResponse {
     repeated string chunk_names = 1;
@@ -163,32 +153,14 @@ message ListResponse {
 }
 
   
-message FilePush {
-    string file_name = 2;
-    bytes file_data = 3;
-    int32 file_size = 4;
-    bytes checksum = 5;
-}
 
 message ChunkProxyPush{
     string destNode = 2;
     string chunkName = 3;
 }
 
-message Request{
-    string file_name = 1;
-    int32 file_size = 2;
-    string action = 3;
-    bool acknowledged = 4;
-
-}
-
-
-
-
 message Wrapper {
     oneof msg {
-        Action action = 1;
         Register register = 2;
         Heartbeat heartbeat = 3;
 
