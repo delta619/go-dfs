@@ -254,10 +254,6 @@ func worker(heartbeartController *messages.MessageHandler, host string) {
 
 			// fmt.Print("Response to my heartbeat from Controller")
 
-		case *messages.Wrapper_Register:
-			// fmt.Println("Registration confirmation received from Controller")
-		case *messages.Wrapper_FileRequest:
-			// fmt.Println("File req received from Controller.")
 		case *messages.Wrapper_ChunkReplicaRoute:
 			chunkName := msg.ChunkReplicaRoute.ChunkName
 			otherNodes := msg.ChunkReplicaRoute.OtherNodes

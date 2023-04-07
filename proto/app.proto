@@ -191,11 +191,6 @@ message Wrapper {
         Action action = 1;
         Register register = 2;
         Heartbeat heartbeat = 3;
-        Response response = 4;
-
-        Request file_request = 5;
-        FilePush file_push = 6;
-        Response file_response = 7;
 
         StoreRequest store_request = 8;
         StoreResponse store_response = 9;
