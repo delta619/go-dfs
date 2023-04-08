@@ -2,7 +2,7 @@
 
 port_prefix=21 # Put your assigned port prefix here.
                # See: https://www.cs.usfca.edu/~mmalensek/cs677/schedule/materials/ports.html
-nodes=12   # Number of nodes to run
+nodes=11      # Number of nodes to run
 
 # Server list. You can comment out servers that you don't want to use with '#'
 servers=(
@@ -15,9 +15,9 @@ servers=(
     "orion07"
     "orion08"
     "orion09"
-    "orion010"
-    "orion011"
-    "orion012"
+    "orion10"
+    "orion11"
+    "orion12"
 )
 
 for (( i = 0; i <= nodes; i++ )); do
@@ -26,7 +26,7 @@ for (( i = 0; i <= nodes; i++ )); do
 
     # This will ssh to the machine, and run 'node orion01 <some port>' in the
     # background.
-    # echo "Starting node on ${servers[${server}]} on port ${port}"
+     echo "Starting node on ${servers[${server}]} on port ${port}"
     ssh ${servers[${server}]} " cd ~/677/P1-ashu/app/node ; go run node.go ${servers[${server}]} ${port}" &
 done
 
